@@ -1,0 +1,30 @@
+# Local build and verification output
+/.build/
+/.swiftpm/
+/dist/
+/artifacts/
+
+# Unselected design explorations and retired local tooling
+/design/
+/.local-archive/
+
+# Editor, Python and macOS state
+.DS_Store
+*.xcuserstate
+xcuserdata/
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.vscode/
+*.log
+*.tmp
+*.partial
+
+# Local credentials and signing files
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.mobileprovision

@@ -1,0 +1,10 @@
+[
+  {"id":"graphite","name":"石墨灰","foreground":"#303235","tile":"#F6F5F2","jpg_background":"#FFFFFF"},
+  {"id":"cobalt","name":"钴蓝","foreground":"#275DE8","tile":"#EDF2FF","jpg_background":"#FFFFFF"},
+  {"id":"navy","name":"藏蓝","foreground":"#203B57","tile":"#ECF1F7","jpg_background":"#FFFFFF"},
+  {"id":"indigo","name":"靛紫","foreground":"#5746B5","tile":"#F2EEFA","jpg_background":"#FFFFFF"},
+  {"id":"orange","name":"陶橙","foreground":"#B84D18","tile":"#FFF1E8","jpg_background":"#FFFFFF"},
+  {"id":"forest","name":"松绿","foreground":"#24674F","tile":"#EDF6F0","jpg_background":"#FFFFFF"},
+  {"id":"burgundy","name":"莓红","foreground":"#974455","tile":"#FBF0F2","jpg_background":"#FFFFFF"},
+  {"id":"inverse","name":"深底反白","foreground":"#F6F5F2","tile":"#25282D","jpg_background":"#25282D"}
+]
