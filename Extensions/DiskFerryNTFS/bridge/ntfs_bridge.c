@@ -25,16 +25,26 @@
 #include <ntfs-3g/reparse.h>
 #include <ntfs-3g/runlist.h>
 #include <ntfs-3g/logging.h>
+#include <ntfs-3g/logfile.h>
+#include <ntfs-3g/index.h>
+
+struct nk_devctx {
+    nk_io io;
+    s64 pos;
+    int failed;          /* sticky: never resume writes after an IO failure */
+    int writes_enabled;  /* forensic flag handles start with writes blocked */
+};
 
 struct nk_volume {
     ntfs_volume *vol;
-    void *devctx;        /* nk_devctx when mounted via nk_mount_io */
-
+    struct nk_devctx *devctx;
+    int marked_dirty;    /* this session owns the on-disk dirty flag */
 };
 
 static int require_writable(nk_volume *v) {
     if (!v || !v->vol) { errno = EINVAL; return -1; }
     if (NVolReadOnly(v->vol)) { errno = EROFS; return -1; }
+    if (v->devctx->failed) { errno = EIO; return -1; }
     return 0;
 }
 
@@ -44,10 +54,11 @@ static u64 nk_mref(ntfs_inode *ni) {
 
 /* ---- callback-backed ntfs_device ---- */
 
-struct nk_devctx {
-    nk_io io;
-    s64   pos;
-};
+static int device_fault(struct nk_devctx *c, int code) {
+    c->failed = 1;
+    errno = code;
+    return -1;
+}
 
 static int nkdev_open(struct ntfs_device *dev, int flags) {
     if ((flags & O_ACCMODE) == O_RDONLY)
@@ -68,7 +79,7 @@ static s64 nkdev_seek(struct ntfs_device *dev, s64 offset, int whence) {
     if ((whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) ||
         (offset > 0 && base > INT64_MAX - offset) ||
         (offset < 0 && offset < -base) || base + offset > c->io.size) {
-        errno = EINVAL; return -1;
+        return device_fault(c, EINVAL);
     }
     c->pos = base + offset;
     return c->pos;
@@ -77,24 +88,24 @@ static s64 nkdev_seek(struct ntfs_device *dev, s64 offset, int whence) {
 static s64 nkdev_pread(struct ntfs_device *dev, void *buf, s64 count, s64 offset) {
     struct nk_devctx *c = dev->d_private;
     if (count < 0 || offset < 0 || offset > c->io.size || count > c->io.size - offset) {
-        errno = EINVAL; return -1;
+        return device_fault(c, EINVAL);
     }
     s64 n = c->io.pread(c->io.ctx, buf, count, offset);
-    if (n > count) { errno = EIO; return -1; }
-    if (n < 0) { errno = EIO; return -1; }
+    if (n < 0 || n > count || (count > 0 && n == 0)) return device_fault(c, EIO);
     return n;
 }
 
 static s64 nkdev_pwrite(struct ntfs_device *dev, const void *buf, s64 count, s64 offset) {
     struct nk_devctx *c = dev->d_private;
     if (NDevReadOnly(dev)) { errno = EROFS; return -1; }
+    if (c->failed) { errno = EIO; return -1; }
+    if (!c->writes_enabled) return device_fault(c, EROFS);
     if (count < 0 || offset < 0 || offset > c->io.size || count > c->io.size - offset) {
-        errno = EINVAL; return -1;
+        return device_fault(c, EINVAL);
     }
-    s64 n = c->io.pwrite(c->io.ctx, buf, count, offset);
-    if (n > count) { errno = EIO; return -1; }
-    if (n < 0) { errno = EIO; return -1; }
     NDevSetDirty(dev);
+    s64 n = c->io.pwrite(c->io.ctx, buf, count, offset);
+    if (n < 0 || n > count || (count > 0 && n == 0)) return device_fault(c, EIO);
     return n;
 }
 
@@ -115,8 +126,9 @@ static s64 nkdev_write(struct ntfs_device *dev, const void *buf, s64 count) {
 static int nkdev_sync(struct ntfs_device *dev) {
     struct nk_devctx *c = dev->d_private;
     if (!NDevReadOnly(dev) && (!c->io.sync || c->io.sync(c->io.ctx))) {
-        errno = EIO; return -1;
+        return device_fault(c, EIO);
     }
+    if (c->failed) { errno = EIO; return -1; }
     NDevClearDirty(dev);
     return 0;
 }
@@ -148,35 +160,16 @@ static struct ntfs_device_operations nk_dev_ops = {
     .ioctl  = nkdev_ioctl,
 };
 
-nk_volume *nk_mount_io(const nk_io *io, char *errbuf, size_t errlen) {
-    if (!io || !io->pread || io->size < 512 ||
-        (!io->readonly && (!io->pwrite || !io->sync))) {
-        errno = EINVAL;
-        if (errbuf && errlen) snprintf(errbuf, errlen, "invalid or incomplete block IO callbacks");
-        return NULL;
-    }
-    if (!io->readonly) {
-        nk_io ro = *io;
-        ro.readonly = 1;
-        nk_volume *preflight = nk_mount_io(&ro, errbuf, errlen);
-        if (!preflight) return NULL;
-        int unsafe = preflight->vol->flags != 0 ||
-                     ntfs_volume_check_hiberfile(preflight->vol, 0) != 0;
-        int closed = nk_umount(preflight);
-        if (unsafe || closed) {
-            errno = EROFS;
-            if (errbuf && errlen) snprintf(errbuf, errlen, "unsafe or unknown NTFS health; writable mount refused");
-            return NULL;
-        }
-    }
+static nk_volume *open_engine_io(const nk_io *io, ntfs_mount_flags flags,
+                                 int writes_enabled, char *errbuf, size_t errlen) {
     struct nk_devctx *c = calloc(1, sizeof(*c));
     if (!c) return NULL;
     c->io = *io;
+    c->writes_enabled = writes_enabled;
 
     struct ntfs_device *dev = ntfs_device_alloc("fskit-block", 0, &nk_dev_ops, c);
     if (!dev) { free(c); return NULL; }
 
-    ntfs_mount_flags flags = io->readonly ? NTFS_MNT_RDONLY : NTFS_MNT_NONE;
     ntfs_volume *vol = ntfs_device_mount(dev, flags);
     if (!vol) {
         if (errbuf && errlen)
@@ -185,19 +178,110 @@ nk_volume *nk_mount_io(const nk_io *io, char *errbuf, size_t errlen) {
         free(c);
         return NULL;
     }
+    if (c->failed) {
+        ntfs_umount(vol, FALSE);
+        free(c);
+        errno = EIO;
+        return NULL;
+    }
     nk_volume *v = calloc(1, sizeof(*v));
-    if (!v) { ntfs_umount(vol, TRUE); free(c); return NULL; }
+    if (!v) { ntfs_umount(vol, FALSE); free(c); errno = ENOMEM; return NULL; }
     v->vol = vol;
     v->devctx = c;
     return v;
 }
 
-int nk_umount(nk_volume *v) {
-    if (!v) return -1;
-    int r = v->vol ? ntfs_umount(v->vol, FALSE) : 0;  /* frees the device too */
+static int close_engine(nk_volume *v) {
+    int failed = 0;
+    if (!v->devctx->io.readonly && v->devctx->writes_enabled && nk_sync(v)) failed = 1;
+    if (ntfs_umount(v->vol, FALSE)) failed = 1; /* frees vol and device even on error */
+    if (v->devctx->failed) failed = 1;
     free(v->devctx);
     free(v);
-    return r;
+    if (failed) { errno = EIO; return -1; }
+    return 0;
+}
+
+/* Equivalent to the pinned engine's read-only logfile checks. Do this before
+ * persisting our dirty marker; never replay/reset the Windows journal. */
+static int journal_is_clean(ntfs_volume *vol) {
+    ntfs_inode *ni = ntfs_inode_open(vol, FILE_LogFile);
+    if (!ni) return 0;
+    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    RESTART_PAGE_HEADER *restart = NULL;
+    int clean = na && ntfs_check_logfile(na, &restart) && ntfs_is_logfile_clean(na, restart);
+    if (restart && restart->major_ver == const_cpu_to_le16(2) &&
+        restart->minor_ver == const_cpu_to_le16(0)) clean = 0;
+    free(restart);
+    if (na) ntfs_attr_close(na);
+    if (ntfs_inode_close(ni)) clean = 0;
+    return clean;
+}
+
+/* Use a separate metadata-only handle. FORENSIC forbids automatic mount-time
+ * changes; callbacks also block every write until the expected flags are
+ * checked. The flag record is synced before a data-writing handle can open.
+ * Clearing is allowed only after the data handle has closed and synced. */
+static int change_session_flag(const nk_io *io, le16 expected, le16 updated) {
+    nk_volume *marker = open_engine_io(io, NTFS_MNT_FORENSIC, 0, NULL, 0);
+    if (!marker) return -1;
+    int result = -1;
+    if (marker->vol->flags == expected) {
+        marker->devctx->writes_enabled = 1;
+        result = ntfs_volume_write_flags(marker->vol, updated);
+        if (result == 0) result = nkdev_sync(marker->vol->dev);
+    } else {
+        errno = EROFS;
+    }
+    int saved = result == 0 ? 0 : errno;
+    int closed = close_engine(marker);
+    if (result != 0 || closed != 0) {
+        errno = saved ? saved : EIO;
+        return -1;
+    }
+    return result;
+}
+
+nk_volume *nk_mount_io(const nk_io *io, char *errbuf, size_t errlen) {
+    if (!io || !io->pread || io->size < 512 ||
+        (!io->readonly && (!io->pwrite || !io->sync))) {
+        errno = EINVAL;
+        if (errbuf && errlen) snprintf(errbuf, errlen, "invalid or incomplete block IO callbacks");
+        return NULL;
+    }
+    if (io->readonly) return open_engine_io(io, NTFS_MNT_RDONLY, 0, errbuf, errlen);
+
+    nk_io ro = *io;
+    ro.readonly = 1;
+    nk_volume *preflight = open_engine_io(&ro, NTFS_MNT_RDONLY, 0, errbuf, errlen);
+    if (!preflight) return NULL;
+    int unsafe = preflight->vol->flags != 0 ||
+                 ntfs_volume_check_hiberfile(preflight->vol, 0) != 0 ||
+                 !journal_is_clean(preflight->vol);
+    int closed = close_engine(preflight);
+    if (unsafe || closed) {
+        errno = EROFS;
+        if (errbuf && errlen) snprintf(errbuf, errlen, "unsafe or unknown NTFS health; writable mount refused");
+        return NULL;
+    }
+    if (change_session_flag(io, 0, VOLUME_IS_DIRTY)) {
+        if (errbuf && errlen) snprintf(errbuf, errlen, "cannot persist NTFS session dirty flag");
+        return NULL;
+    }
+    /* All automatic engine mount changes now occur under a durable dirty
+     * marker. Failed opens deliberately leave it for Windows checking. */
+    nk_volume *v = open_engine_io(io, NTFS_MNT_NONE, 1, errbuf, errlen);
+    if (v) v->marked_dirty = 1;
+    return v;
+}
+
+int nk_umount(nk_volume *v) {
+    if (!v) { errno = EINVAL; return -1; }
+    nk_io io = v->devctx->io;
+    int marked_dirty = v->marked_dirty;
+    if (close_engine(v)) return -1;
+    if (!marked_dirty) return 0;
+    return change_session_flag(&io, VOLUME_IS_DIRTY, 0);
 }
 
 int nk_statvfs(nk_volume *v, long long *total_bytes, long long *free_bytes,
@@ -474,8 +558,19 @@ int nk_truncate(nk_volume *v, const char *path, long long size) {
 }
 
 int nk_sync(nk_volume *v) {
-    if (!v) return -1;
-    return ntfs_device_sync(v->vol->dev) ? -1 : 0;
+    if (!v || !v->vol) { errno = EINVAL; return -1; }
+    if (!NVolReadOnly(v->vol) && !v->devctx->failed) {
+        if (v->vol->secure_xsii) ntfs_index_ctx_reinit(v->vol->secure_xsii);
+        if (v->vol->secure_xsdh) ntfs_index_ctx_reinit(v->vol->secure_xsdh);
+        ntfs_inode *inodes[] = { v->vol->secure_ni, v->vol->lcnbmp_ni,
+                                v->vol->mft_ni, v->vol->mftmirr_ni, v->vol->vol_ni };
+        for (size_t i = 0; i < sizeof(inodes) / sizeof(inodes[0]); i++) {
+            if (inodes[i] && ntfs_inode_sync(inodes[i])) device_fault(v->devctx, EIO);
+        }
+    }
+    /* A previous failure must not be forgotten when NDevDirty is already
+     * clear. Still attempt the persistence callback for completed writes. */
+    return nkdev_sync(v->vol->dev);
 }
 
 int nk_set_times(nk_volume *v, const char *path, long long atime,
@@ -553,7 +648,8 @@ int nk_is_dirty(nk_volume *v) {
     return (v->vol->flags & VOLUME_IS_DIRTY) ? 1 : 0;
 }
 
-/* Read-only check only. DiskFerry never repairs or clears dirty state. */
+/* Checks never repair a volume or clear pre-existing dirty state. Only a
+ * successful close of our own writable session may clear its session flag. */
 int nk_fsck(const nk_io *io, int repair, char *errbuf, size_t errlen) {
     if (!io || repair) { errno = ENOTSUP; return -1; }
     nk_io ro = *io;
@@ -562,6 +658,7 @@ int nk_fsck(const nk_io *io, int repair, char *errbuf, size_t errlen) {
     if (!v) return -1;
     int r = v->vol->flags != 0 ? 1 : 0;
     if (ntfs_volume_check_hiberfile(v->vol, 0) != 0) r = -2;
+    if (r == 0 && !journal_is_clean(v->vol)) r = -1;
     if (nk_umount(v)) return -1;
     return r;
 }

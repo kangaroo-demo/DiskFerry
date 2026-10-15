@@ -6,9 +6,12 @@ regular files inside .build are opened. No raw-device test argument exists.
 import ctypes as c
 import hashlib
 import os
+import select
 import shutil
+import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,6 +39,10 @@ def build_bridge():
                     str(SOURCE / "ntfs_bridge.c"), str(ENGINE / "libntfs-3g/.libs/libntfs-3g.a"),
                     "-framework", "CoreFoundation", "-o", str(BUILD / "bridge.dylib")],
                    env=env, check=True, timeout=120)
+    return load_bridge()
+
+
+def load_bridge():
     lib = c.CDLL(str(BUILD / "bridge.dylib"), use_errno=True)
     signatures = {
         "nk_mount_io": (c.c_void_p, [c.POINTER(IO), c.c_char_p, c.c_size_t]),
@@ -48,6 +55,7 @@ def build_bridge():
         "nk_read": (c.c_longlong, [c.c_void_p, c.c_char_p, c.c_longlong, c.c_longlong, c.c_void_p]),
         "nk_write": (c.c_longlong, [c.c_void_p, c.c_char_p, c.c_longlong, c.c_longlong, c.c_void_p]),
         "nk_sync": (c.c_int, [c.c_void_p]),
+        "nk_is_dirty": (c.c_int, [c.c_void_p]),
         "nk_fsck": (c.c_int, [c.POINTER(IO), c.c_int, c.c_char_p, c.c_size_t]),
         "nk_xattr_set": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p, c.c_void_p, c.c_longlong]),
         "nk_xattr_get": (c.c_longlong, [c.c_void_p, c.c_char_p, c.c_char_p, c.c_void_p, c.c_longlong]),
@@ -206,6 +214,52 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(self.lib.nk_mount_io(c.byref(self.device.io), None, 0))
         self.assertEqual(self.device.writes, 0)
 
+    def test_normal_close_cleans_only_after_persisting_and_allows_next_session(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_is_dirty(self.volume), 1)
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"persisted"), 0)
+        self.assertEqual(self.lib.nk_write(self.volume, b"/persisted", 0, 4, b"KEEP"), 4)
+        self.assertEqual(self.lib.nk_sync(self.volume), 0)
+        self.assertEqual(self.lib.nk_is_dirty(self.volume), 1)
+        self.assertEqual(self.unmount(), 0)
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 0)
+        self.mount()
+        self.assertEqual(self.read(b"/persisted", 16), b"KEEP")
+        self.assertEqual(self.unmount(), 0)
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 0)
+
+    def test_cannot_open_writer_if_session_marker_cannot_be_synced(self):
+        self.device.fail_sync = True
+        self.assertFalse(self.lib.nk_mount_io(c.byref(self.device.io), None, 0))
+        self.assertGreater(self.device.syncs, 0)
+        self.device.fail_sync = False
+        # A marker whose persistence could not be confirmed is not erased.
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 1)
+
+    def test_recovered_sync_callback_cannot_clean_a_failed_session(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"original"), 0)
+        self.assertEqual(self.lib.nk_write(self.volume, b"/original", 0, 4, b"KEEP"), 4)
+        self.device.fail_sync = True
+        self.assertEqual(self.lib.nk_sync(self.volume), -1)
+        self.device.fail_sync = False
+        attempts = self.device.writes
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"after-error"), -1)
+        self.assertEqual(self.lib.nk_sync(self.volume), -1)
+        self.assertEqual(self.unmount(), -1)
+        self.assertEqual(self.device.writes, attempts)
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 1)
+        self.mount(readonly=True)
+        self.assertEqual(self.read(b"/original", 16), b"KEEP")
+
+    def test_shutdown_sync_failure_keeps_the_dirty_marker(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"original"), 0)
+        self.device.fail_sync = True
+        self.assertEqual(self.unmount(), -1)
+        self.device.fail_sync = False
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 1)
+
     def test_failed_sync_is_propagated(self):
         self.mount()
         self.assertEqual(self.lib.nk_create(self.volume, b"/", b"sync.bin"), 0)
@@ -221,6 +275,97 @@ class BridgeTests(unittest.TestCase):
         payload = b"X" * 65536
         self.assertEqual(self.lib.nk_write(self.volume, b"/write.bin", 0, len(payload), payload), -1)
         self.device.fail_write = False
+
+    def test_mutating_operations_do_not_hide_a_device_write_failure(self):
+        operations = [
+            ("create", lambda: self.lib.nk_create(self.volume, b"/", b"new-file")),
+            ("mkdir", lambda: self.lib.nk_mkdir(self.volume, b"/", b"new-directory")),
+            ("rename", lambda: self.lib.nk_rename(self.volume, b"/original", b"/", b"renamed")),
+            ("delete", lambda: self.lib.nk_delete(self.volume, b"/original")),
+            ("truncate", lambda: self.lib.nk_truncate(self.volume, b"/original", 0)),
+            ("times", lambda: self.lib.nk_set_times(self.volume, b"/original", 1, 1, 1)),
+            ("label", lambda: self.lib.nk_set_label(self.volume, b"CHANGED")),
+            ("xattr set", lambda: self.lib.nk_xattr_set(self.volume, b"/original", b"test", b"NEW", 3)),
+            ("xattr remove", lambda: self.lib.nk_xattr_remove(self.volume, b"/original", b"test")),
+        ]
+        for index, (name, operation) in enumerate(operations):
+            with self.subTest(operation=name):
+                if index:
+                    self.device.close()
+                    shutil.copyfile(self.template, self.path)
+                    self.device = ImageIO(self.path)
+                self.mount()
+                self.assertEqual(self.lib.nk_create(self.volume, b"/", b"original"), 0)
+                self.assertEqual(self.lib.nk_write(self.volume, b"/original", 0, 4, b"KEEP"), 4)
+                self.assertEqual(self.lib.nk_xattr_set(self.volume, b"/original", b"test", b"OLD", 3), 0)
+                attempts = self.device.writes
+                self.device.fail_write = True
+                try:
+                    result = operation()
+                    self.assertGreater(self.device.writes, attempts, "fixture must reach a device write")
+                    self.assertEqual(result, -1)
+                finally:
+                    self.device.fail_write = False
+                    self.assertEqual(self.unmount(), -1)
+
+    def test_io_failure_freezes_further_mutation_and_cannot_be_forgotten(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"original"), 0)
+        self.device.fail_write = True
+        self.assertEqual(self.lib.nk_write(self.volume, b"/original", 0, 65536, b"X" * 65536), -1)
+        self.device.fail_write = False
+        attempts = self.device.writes
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"after-error"), -1)
+        self.assertEqual(self.lib.nk_truncate(self.volume, b"/original", 0), -1)
+        self.assertEqual(self.lib.nk_write(self.volume, b"/original", 0, 4, b"BAD!"), -1)
+        self.assertEqual(self.device.writes, attempts)
+        self.assertEqual(self.lib.nk_sync(self.volume), -1)
+        self.assertEqual(self.unmount(), -1)
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 1)
+
+    def test_read_failure_also_prevents_further_writes(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"original"), 0)
+        data = b"X" * (2 * 1024 * 1024)
+        self.assertEqual(self.lib.nk_write(self.volume, b"/original", 0, len(data), data), len(data))
+        self.device.fail_read = True
+        output = c.create_string_buffer(4096)
+        self.assertEqual(self.lib.nk_read(self.volume, b"/original", 1024 * 1024, 4096, output), -1)
+        self.device.fail_read = False
+        attempts = self.device.writes
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"after-error"), -1)
+        self.assertEqual(self.lib.nk_sync(self.volume), -1)
+        self.assertEqual(self.unmount(), -1)
+        self.assertEqual(self.device.writes, attempts)
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 1)
+
+    def test_killed_writer_leaves_a_dirty_volume_and_readonly_data(self):
+        # The child opens only the fresh regular image created by this test.
+        # SIGKILL models process loss; it does not model hardware power loss.
+        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
+                                  "--interrupted-writer", str(self.path)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            ready, _, _ = select.select([child.stdout], [], [], 20)
+            self.assertTrue(ready, "writer did not report persisted data")
+            self.assertEqual(child.stdout.readline(), b"ready\n")
+            child.kill()
+            child.wait(timeout=10)
+            self.assertEqual(child.returncode, -signal.SIGKILL)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=10)
+            child.stdout.close()
+            child.stderr.close()
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 1)
+        before = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.assertFalse(self.lib.nk_mount_io(c.byref(self.device.io), None, 0))
+        self.assertEqual(self.device.writes, 0)
+        self.mount(readonly=True)
+        self.assertEqual(self.read(b"/survives.bin", 32), b"persisted before interruption")
+        self.assertEqual(self.unmount(), 0)
+        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
 
     def test_full_volume_reports_failure_and_preserves_successful_prefix(self):
         self.mount()
@@ -273,6 +418,19 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.device.writes, 0)
         self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
 
+    def test_invalid_windows_journal_refuses_before_writing_a_session_marker(self):
+        # Build an invalid $LogFile only inside this fresh ordinary image.
+        # ntfscp is the pinned upstream fixture tool, never given a device.
+        invalid = Path(self.temporary.name) / "invalid-logfile.bin"
+        invalid.write_bytes(bytes(4096))
+        subprocess.run([str(ENGINE / "ntfsprogs/ntfscp"), "--inode", str(self.path),
+                        str(invalid), "2"], check=True, capture_output=True, timeout=30)
+        before = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), -1)
+        self.assertFalse(self.lib.nk_mount_io(c.byref(self.device.io), None, 0))
+        self.assertEqual(self.device.writes, 0)
+        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
+
     def test_xattr_ads_roundtrip_and_delete_persist(self):
         self.mount()
         self.assertEqual(self.lib.nk_create(self.volume, b"/", b"attrs.bin"), 0)
@@ -288,5 +446,26 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.lib.nk_read(self.volume, b"/attrs.bin", 0, 8, data), -1)
 
 
+def interrupted_writer(path):
+    # Refuse arbitrary caller-supplied devices or files outside test fixtures.
+    path = Path(path).resolve(strict=True)
+    if not path.is_relative_to(BUILD.resolve()) or path.name != "disposable.ntfs":
+        raise ValueError("Expected a fresh bridge-test image")
+    device = ImageIO(path)
+    lib = load_bridge()
+    volume = lib.nk_mount_io(c.byref(device.io), None, 0)
+    if not volume or lib.nk_create(volume, b"/", b"survives.bin") != 0:
+        raise RuntimeError("writer could not initialize fixture")
+    data = b"persisted before interruption"
+    if lib.nk_write(volume, b"/survives.bin", 0, len(data), data) != len(data) or lib.nk_sync(volume) != 0:
+        raise RuntimeError("writer could not persist fixture")
+    print("ready", flush=True)
+    # Wait on our parent; do not voluntarily close/clean the NTFS session.
+    signal.pause()
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    if len(sys.argv) == 3 and sys.argv[1] == "--interrupted-writer":
+        interrupted_writer(sys.argv[2])
+    else:
+        unittest.main(verbosity=2)

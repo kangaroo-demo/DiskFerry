@@ -18,5 +18,8 @@ Local changes (2026-10-16):
 - Stop IO on resource revocation and propagate shutdown failures through deactivation.
 - Reject unsupported attribute changes before truncation; acknowledge only applied attributes, and reject overflowing sizes and timestamps.
 - Validate resource geometry before conversion/allocation, bound IO buffers, and close the engine during unmount while retaining shutdown errors for deactivation.
+- Latch callback read/write/sync failures for the entire session; refuse subsequent mutations and never report a recovered callback as a clean shutdown.
+- Validate the Windows journal read-only before changing session state. Persist a dirty flag using a write-gated forensic handle before opening the normal writable engine; flush retained inode/index state and close the data handle before clearing only this session's flag.
+- Test actual child-process termination against ordinary NTFS images, plus initial-marker, recovered-sync, read/write and shutdown failures. These tests do not qualify FSKit resource persistence or hardware power loss.
 
 The engine is built from the pinned NTFS-3G source specified by `Scripts/prepare-ntfs-core.sh`. Building does not prove OS acceptance, resource access, filesystem semantics or safe writes. These require the staged tests and real signed-module qualification in [the release plan](../../docs/first-release-plan.md).

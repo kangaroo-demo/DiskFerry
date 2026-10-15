@@ -56,16 +56,21 @@ typedef struct {
     void        *ctx;
     nk_pread_cb  pread;
     nk_pwrite_cb pwrite;
-    nk_sync_cb  sync;      /* must report persistence errors for writable IO */
+    nk_sync_cb  sync;      /* must persist completed writes and report errors;
+                             returning success without persistence is invalid */
     long long    size;      /* device size in bytes */
     int          readonly;
 } nk_io;
 
 /* Mount through the callback device. `io` is copied; `io->ctx` must stay
- * valid until nk_umount. */
+ * valid until nk_umount. Writable sessions require a clean volume and Windows
+ * journal, and persist a dirty flag before engine writes. Any IO failure is
+ * sticky: further mutations and a successful sync/close are refused. */
 nk_volume *nk_mount_io(const nk_io *io, char *errbuf, size_t errlen);
 
-/* Flush and release. Returns 0 on success. */
+/* Flush and release, even on error. After all data/engine state is durably
+ * closed, clear only this session's dirty flag. Returns 0 on success; the
+ * handle must not be reused regardless of the return value. */
 int nk_umount(nk_volume *v);
 
 /* Volume totals for statfs. Any out-pointer may be NULL. */
