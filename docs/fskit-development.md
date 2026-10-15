@@ -37,7 +37,7 @@ xcodebuild -project DiskFerryFSKit.xcodeproj -scheme DiskFerry \
   -f "$PWD/dist/DiskFerry.app"
 ```
 
-GitHub Actions 的 `Experimental FSKit build and image tests` 工作流可手动运行同一组镜像、值对象和构建检查。它明确要求 macOS 与 SDK 26.4+；托管 runner 不满足时检查失败，不跳过后冒充通过。此工作流不签名、不安装驱动、不访问物理盘，也不替代系统挂载验收。
+GitHub Actions 的 `Experimental FSKit build and image tests` 工作流对修改扩展相关文件的 PR 执行同一组镜像、值对象和构建检查，也支持手动运行。它明确要求 macOS 与 SDK 26.4+；托管 runner 不满足时检查失败，不跳过后冒充通过。此工作流不签名、不安装驱动、不访问物理盘，也不替代系统挂载验收。
 
 ## 正式身份配置与系统接入
 

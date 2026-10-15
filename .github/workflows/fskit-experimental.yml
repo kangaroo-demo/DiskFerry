@@ -2,6 +2,16 @@ name: Experimental FSKit build and image tests
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Extensions/**'
+      - 'DiskFerryFSKit.xcodeproj/**'
+      - 'Scripts/prepare-ntfs-core.sh'
+      - 'Scripts/build-fskit-extension.sh'
+      - 'Scripts/test-fskit-adapter.sh'
+      - 'Tests/FSKitAdapterTests/**'
+      - 'Tests/NTFSBridgeTests/**'
+      - '.github/workflows/fskit-experimental.yml'
 
 permissions:
   contents: read
