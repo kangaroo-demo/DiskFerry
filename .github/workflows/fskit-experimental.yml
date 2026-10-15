@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'Extensions/**'
+      - 'Vendor/**'
       - 'DiskFerryFSKit.xcodeproj/**'
       - 'Scripts/prepare-ntfs-core.sh'
       - 'Scripts/build-fskit-extension.sh'

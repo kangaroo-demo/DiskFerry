@@ -17,7 +17,7 @@ bash Scripts/test-fskit-adapter.sh
 bash Scripts/build-fskit-extension.sh
 ```
 
-固定依赖下载到 `.build/vendor`，先验证 SHA-256，再在项目内编译，不执行 `make install`。实验脚本产物位于 `dist/experimental/DiskFerry.app`，仅作编译与包完整性检查，不安装或启用扩展。
+固定 NTFS-3G 原始源码包保留在 `Vendor/`，pkgconf 下载到 `.build/vendor`；均先验证 SHA-256，再在项目内编译，不执行 `make install`。实验脚本产物位于 `dist/experimental/DiskFerry.app`，仅作编译与包完整性检查，不安装或启用扩展。
 
 Xcode 工程的无签名构建：
 

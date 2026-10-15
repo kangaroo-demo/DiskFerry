@@ -60,7 +60,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ./dist/DiskFerry.app/Contents/MacOS/DiskFerry --smoke-test artifacts/ui-check
 ```
 
-UI 检查使用演示模式，检查菜单分发、窗口生命周期及设置页面。以下可选步骤在 `.build/vendor` 内下载并构建固定版本的 NTFS-3G / pkgconf，仅操作新建的 64 MiB 普通文件镜像，验证中文文件名、新建、覆盖、清空和逐字节回读：
+UI 检查使用演示模式，检查菜单分发、窗口生命周期及设置页面。以下可选步骤使用 `Vendor/` 保留的 NTFS-3G 原始源码包，下载 pkgconf 后在 `.build/vendor` 内构建固定版本，仅操作新建的 64 MiB 普通文件镜像，验证中文文件名、新建、覆盖、清空和逐字节回读：
 
 ```bash
 bash Scripts/prepare-ntfs-core.sh
@@ -86,6 +86,7 @@ swift test
 | `Sources/DiskFerryCLI` | 命令行入口 |
 | `Tests` | 单元测试与可选镜像接入测试 |
 | `Scripts` | 应用构建与普通镜像验证 |
+| `Vendor` | 固定 NTFS-3G 原始源码包、许可与来源记录 |
 | `Resources/Brand` | [品牌素材与导出说明](Resources/Brand/README.md) |
 | `docs` | [文档索引](docs/README.md)、需求历史、技术路线与验证记录 |
 

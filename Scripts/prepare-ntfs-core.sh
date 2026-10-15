@@ -4,6 +4,16 @@ TASK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_VENDOR="$TASK_ROOT/.build/vendor"
 mkdir -p "$TASK_VENDOR"
 
+# Preserve the exact upstream source distribution for reproducible builds and
+# corresponding-source delivery. Tuxera's download endpoint can return 403 to
+# CI runners. Verify the pinned archive even when no network request is made.
+TASK_NTFS_ARCHIVE='ntfs-3g_ntfsprogs-2026.9.28.tgz'
+TASK_NTFS_HASH='350d9415c59f7c3fa74e23985ad2d56423c6a168337368f672e2e362d8f295c8'
+printf '%s  %s\n' "$TASK_NTFS_HASH" "$TASK_ROOT/Vendor/$TASK_NTFS_ARCHIVE" | shasum -a 256 -c -
+if [[ ! -f "$TASK_VENDOR/$TASK_NTFS_ARCHIVE" ]]; then
+    cp "$TASK_ROOT/Vendor/$TASK_NTFS_ARCHIVE" "$TASK_VENDOR/$TASK_NTFS_ARCHIVE"
+fi
+
 fetch_source() {
     local task_url="$1" task_name="$2" task_hash="$3"
     local task_archive="$TASK_VENDOR/$task_name"
@@ -17,8 +27,7 @@ fetch_source() {
 
 fetch_source 'https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz' \
     'pkgconf-2.3.0.tar.xz' '3a9080ac51d03615e7c1910a0a2a8df08424892b5f13b0628a204d3fcce0ea8b'
-fetch_source 'https://tuxera.com/opensource/ntfs-3g_ntfsprogs-2026.9.28.tgz' \
-    'ntfs-3g_ntfsprogs-2026.9.28.tgz' '350d9415c59f7c3fa74e23985ad2d56423c6a168337368f672e2e362d8f295c8'
+printf '%s  %s\n' "$TASK_NTFS_HASH" "$TASK_VENDOR/$TASK_NTFS_ARCHIVE" | shasum -a 256 -c -
 
 if [[ ! -d "$TASK_VENDOR/pkgconf-2.3.0" ]]; then
     tar -xJf "$TASK_VENDOR/pkgconf-2.3.0.tar.xz" -C "$TASK_VENDOR"
@@ -36,4 +45,4 @@ PKG_CONFIG="$TASK_VENDOR/pkgconf-2.3.0/pkgconf" ./configure \
     --disable-ntfs-3g --disable-shared --enable-static --disable-dependency-tracking \
     --prefix="$TASK_VENDOR/ntfs-3g-local" > "$TASK_VENDOR/ntfs-configure.log" 2>&1
 make -j4 > "$TASK_VENDOR/ntfs-build.log" 2>&1
-printf 'Built image-only NTFS verification tools: %s\n' "$TASK_VENDOR/ntfs-3g-2026.9.28/ntfsprogs"
+printf 'Built pinned NTFS core and verification tools: %s\n' "$TASK_VENDOR/ntfs-3g-2026.9.28/ntfsprogs"
