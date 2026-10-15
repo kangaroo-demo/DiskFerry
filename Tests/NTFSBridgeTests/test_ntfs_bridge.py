@@ -4,6 +4,7 @@ Run with Python 3 after Scripts/prepare-ntfs-core.sh. Only freshly created
 regular files inside .build are opened. No raw-device test argument exists.
 """
 import ctypes as c
+import errno
 import hashlib
 import os
 import select
@@ -49,10 +50,12 @@ def load_bridge():
         "nk_umount": (c.c_int, [c.c_void_p]),
         "nk_create": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p]),
         "nk_mkdir": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p]),
+        "nk_create_symlink": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p, c.c_char_p]),
         "nk_delete": (c.c_int, [c.c_void_p, c.c_char_p]),
         "nk_rename": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p, c.c_char_p]),
         "nk_truncate": (c.c_int, [c.c_void_p, c.c_char_p, c.c_longlong]),
         "nk_read": (c.c_longlong, [c.c_void_p, c.c_char_p, c.c_longlong, c.c_longlong, c.c_void_p]),
+        "nk_readlink": (c.c_int, [c.c_void_p, c.c_char_p, c.c_void_p, c.c_size_t]),
         "nk_write": (c.c_longlong, [c.c_void_p, c.c_char_p, c.c_longlong, c.c_longlong, c.c_void_p]),
         "nk_sync": (c.c_int, [c.c_void_p]),
         "nk_is_dirty": (c.c_int, [c.c_void_p]),
@@ -213,6 +216,91 @@ class BridgeTests(unittest.TestCase):
         self.device.io.sync = SYNC()
         self.assertFalse(self.lib.nk_mount_io(c.byref(self.device.io), None, 0))
         self.assertEqual(self.device.writes, 0)
+
+    def test_metadata_files_refuse_all_public_mutations_without_writes(self):
+        self.mount()
+        before = self.path.read_bytes()
+        writes = self.device.writes
+        for path in [b"/$MFT", b"/$LogFile", b"//$LogFile", b"/$Bitmap", b"/$Boot",
+                     b"/$Extend/$Quota", b"/$Extend/$ObjId", b"/$Extend/$Reparse"]:
+            operations = [
+                ("times", lambda: self.lib.nk_set_times(self.volume, path, 1, 1, 1)),
+                ("write", lambda: self.lib.nk_write(self.volume, path, 0, 3, b"BAD")),
+                ("truncate", lambda: self.lib.nk_truncate(self.volume, path, 0)),
+                ("xattr-set", lambda: self.lib.nk_xattr_set(self.volume, path, b"test", b"BAD", 3)),
+                ("xattr-remove", lambda: self.lib.nk_xattr_remove(self.volume, path, b"test")),
+                ("rename", lambda: self.lib.nk_rename(self.volume, path, b"/", b"renamed")),
+                ("delete", lambda: self.lib.nk_delete(self.volume, path)),
+            ]
+            for operation, call in operations:
+                with self.subTest(path=path, operation=operation):
+                    c.set_errno(0)
+                    self.assertEqual(call(), -1)
+                    self.assertEqual(c.get_errno(), errno.EPERM)
+                    self.assertEqual(self.device.writes, writes)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.unmount(), 0)
+        self.assertEqual(self.lib.nk_fsck(c.byref(self.device.io), 0, None, 0), 0)
+
+    def test_metadata_directories_refuse_namespace_changes(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"original"), 0)
+        before = self.path.read_bytes()
+        writes = self.device.writes
+        operations = [
+            lambda: self.lib.nk_create(self.volume, b"/$Extend", b"file"),
+            lambda: self.lib.nk_mkdir(self.volume, b"/$Extend", b"directory"),
+            lambda: self.lib.nk_create_symlink(self.volume, b"/$Extend", b"link", b"/original"),
+            lambda: self.lib.nk_rename(self.volume, b"/original", b"/$Extend", b"moved"),
+            lambda: self.lib.nk_rename(self.volume, b"/$Extend", b"/", b"moved"),
+            lambda: self.lib.nk_delete(self.volume, b"/$Extend"),
+            lambda: self.lib.nk_rename(self.volume, b"/", b"/", b"moved"),
+        ]
+        for index, operation in enumerate(operations):
+            with self.subTest(operation=index):
+                c.set_errno(0)
+                self.assertEqual(operation(), -1)
+                self.assertEqual(c.get_errno(), errno.EPERM)
+                self.assertEqual(self.device.writes, writes)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_hidden_metadata_cannot_be_read_by_direct_path(self):
+        before = self.path.read_bytes()
+        self.mount(readonly=True)
+        for path in [b"/$MFT", b"/$LogFile", b"/$Extend/$Quota", b"//$Extend/$ObjId"]:
+            with self.subTest(path=path):
+                data = c.create_string_buffer(512)
+                c.set_errno(0)
+                self.assertEqual(self.lib.nk_read(self.volume, path, 0, len(data), data), -1)
+                self.assertEqual(c.get_errno(), errno.EPERM)
+        self.assertEqual(self.unmount(), 0)
+        self.assertEqual(self.device.writes, 0)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_dollar_prefixed_user_files_and_root_attributes_remain_usable(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"$user-data"), 0)
+        self.assertEqual(self.lib.nk_write(self.volume, b"/$user-data", 0, 4, b"KEEP"), 4)
+        self.assertEqual(self.lib.nk_xattr_set(self.volume, b"/", b"test", b"ROOT", 4), 0)
+        self.assertEqual(self.lib.nk_set_times(self.volume, b"/", 1, 1, 1), 0)
+        self.assertEqual(self.unmount(), 0)
+        self.mount(readonly=True)
+        self.assertEqual(self.read(b"/$user-data", 16), b"KEEP")
+        data = c.create_string_buffer(4)
+        self.assertEqual(self.lib.nk_xattr_get(self.volume, b"/", b"test", data, 4), 4)
+        self.assertEqual(data.raw, b"ROOT")
+
+    def test_system_flagged_user_symlinks_are_not_mistaken_for_metadata(self):
+        self.mount()
+        # The pinned engine creates Interix links with FILE_ATTR_SYSTEM.
+        self.assertEqual(self.lib.nk_create_symlink(self.volume, b"/", b"link", b"/target"), 0)
+        self.assertEqual(self.lib.nk_rename(self.volume, b"/link", b"/", b"renamed-link"), 0)
+        self.assertEqual(self.unmount(), 0)
+        self.mount()
+        data = c.create_string_buffer(256)
+        self.assertEqual(self.lib.nk_readlink(self.volume, b"/renamed-link", data, len(data)), 0)
+        self.assertEqual(data.value, b"/target")
+        self.assertEqual(self.lib.nk_delete(self.volume, b"/renamed-link"), 0)
 
     def test_normal_close_cleans_only_after_persisting_and_allows_next_session(self):
         self.mount()

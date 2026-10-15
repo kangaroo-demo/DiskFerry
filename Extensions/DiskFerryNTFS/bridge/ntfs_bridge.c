@@ -52,6 +52,80 @@ static u64 nk_mref(ntfs_inode *ni) {
     return MK_MREF(ni->mft_no, le16_to_cpu(ni->mrec->sequence_number));
 }
 
+/* The engine's internal APIs intentionally permit access to NTFS metadata.
+ * Public file operations must not inherit that authority. Check record IDs,
+ * including every ancestor, rather than spelling or FILE_ATTR_SYSTEM (which
+ * also describes ordinary Interix symlinks). Check all FILE_NAME parents so
+ * an existing alias outside $Extend cannot expose its internal files. */
+static int public_inode_error(ntfs_inode *ni) {
+    if (ni->mft_no == FILE_root) return 0;
+    if (ni->mft_no < FILE_first_user) return EPERM;
+    ntfs_attr_search_ctx *ctx = ntfs_attr_get_search_ctx(ni, NULL);
+    if (!ctx) return errno ? errno : EIO;
+    int result = 0, found = 0;
+    while (!ntfs_attr_lookup(AT_FILE_NAME, NULL, 0, CASE_SENSITIVE, 0, NULL, 0, ctx)) {
+        ATTR_RECORD *attr = ctx->attr;
+        u32 length = le32_to_cpu(attr->length);
+        u32 offset = le16_to_cpu(attr->value_offset);
+        u32 size = le32_to_cpu(attr->value_length);
+        if (attr->non_resident || offset > length || size > length - offset ||
+            size < offsetof(FILE_NAME_ATTR, file_name)) {
+            result = EIO;
+            break;
+        }
+        FILE_NAME_ATTR *name = (FILE_NAME_ATTR *)((u8 *)attr + offset);
+        if (size - offsetof(FILE_NAME_ATTR, file_name) < (u32)name->file_name_length * 2) {
+            result = EIO;
+            break;
+        }
+        found = 1;
+        if (MREF_LE(name->parent_directory) == FILE_Extend) {
+            result = EPERM;
+            break;
+        }
+    }
+    if (!result && (!found || errno != ENOENT)) result = EIO;
+    ntfs_attr_put_search_ctx(ctx);
+    return result;
+}
+
+static ntfs_inode *open_public_inode(nk_volume *v, const char *path, int allow_root) {
+    if (!v || !v->vol || !path || path[0] != '/') { errno = EINVAL; return NULL; }
+    char *copy = strdup(path);
+    if (!copy) return NULL;
+    ntfs_inode *ni = ntfs_inode_open(v->vol, FILE_root);
+    char *state = NULL;
+    int error = 0;
+    for (char *part = strtok_r(copy, "/", &state); ni && part;
+         part = strtok_r(NULL, "/", &state)) {
+        if (!strcmp(part, ".") || !strcmp(part, "..")) { error = EINVAL; break; }
+        if (!(ni->mrec->flags & MFT_RECORD_IS_DIRECTORY)) { error = ENOTDIR; break; }
+        ntfschar *ucs = NULL;
+        int length = ntfs_mbstoucs(part, &ucs);
+        if (length <= 0 || length > 255 || !ucs) {
+            free(ucs);
+            error = length > 255 ? ENAMETOOLONG : EINVAL;
+            break;
+        }
+        u64 ref = ntfs_inode_lookup_by_name(ni, ucs, length);
+        free(ucs);
+        error = ref == (u64)-1 ? errno : 0;
+        if (ntfs_inode_close(ni) && !error) error = EIO;
+        ni = NULL;
+        if (error) break;
+        ni = ntfs_inode_open(v->vol, ref);
+        if (ni && (error = public_inode_error(ni))) break;
+    }
+    free(copy);
+    if (ni && !error && !allow_root && ni->mft_no == FILE_root) error = EPERM;
+    if (error) {
+        if (ni) ntfs_inode_close(ni);
+        errno = error;
+        return NULL;
+    }
+    return ni;
+}
+
 /* ---- callback-backed ntfs_device ---- */
 
 static int device_fault(struct nk_devctx *c, int code) {
@@ -332,7 +406,7 @@ static void fill_stat(ntfs_inode *ni, ntfs_attr *na, nk_stat *st) {
 
 int nk_stat_path(nk_volume *v, const char *path, nk_stat *st) {
     if (!v || !st) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) return -1;
     ntfs_attr *na = NULL;
     if (!(ni->mrec->flags & MFT_RECORD_IS_DIRECTORY))
@@ -389,7 +463,7 @@ static int nk_filldir(void *ctx, const ntfschar *name, const int name_len,
 
 int nk_list(nk_volume *v, const char *dir_path, nk_dirent_cb cb, void *ctx) {
     if (!v || !cb) return -1;
-    ntfs_inode *dir = ntfs_pathname_to_inode(v->vol, NULL, dir_path);
+    ntfs_inode *dir = open_public_inode(v, dir_path, 1);
     if (!dir) return -1;
     struct list_ctx lc = { v, cb, ctx, 0 };
     s64 pos = 0;
@@ -401,7 +475,7 @@ int nk_list(nk_volume *v, const char *dir_path, nk_dirent_cb cb, void *ctx) {
 long long nk_read(nk_volume *v, const char *path, long long offset,
                   long long count, void *buf) {
     if (!v) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) return -1;
     long long n = -1;
     ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
@@ -417,7 +491,7 @@ long long nk_write(nk_volume *v, const char *path, long long offset,
                    long long count, const void *buf) {
     if (require_writable(v)) return -1;
     if (!v) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 0);
     if (!ni) return -1;
     long long n = -1;
     ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
@@ -434,7 +508,7 @@ static int create_node(nk_volume *v, const char *dir_path, const char *name,
                        mode_t type) {
     if (require_writable(v)) return -1;
     if (!v) return -1;
-    ntfs_inode *dir = ntfs_pathname_to_inode(v->vol, NULL, dir_path);
+    ntfs_inode *dir = open_public_inode(v, dir_path, 1);
     if (!dir) return -1;
     ntfschar *ucs = NULL;
     int len = ntfs_mbstoucs(name, &ucs);
@@ -476,8 +550,8 @@ int nk_delete(nk_volume *v, const char *path) {
     size_t psize = strlen(path) + 2;   /* sized to the path: no length cap */
     char *parent = malloc(psize);
     const char *leaf = parent ? split_path(path, parent, psize) : NULL;
-    ntfs_inode *ni = leaf ? ntfs_pathname_to_inode(v->vol, NULL, path) : NULL;
-    ntfs_inode *dir = ni ? ntfs_pathname_to_inode(v->vol, NULL, parent) : NULL;
+    ntfs_inode *ni = leaf ? open_public_inode(v, path, 0) : NULL;
+    ntfs_inode *dir = ni ? open_public_inode(v, parent, 1) : NULL;
     free(parent);
     if (!dir) { if (ni) ntfs_inode_close(ni); return -1; }
 
@@ -500,9 +574,9 @@ int nk_rename(nk_volume *v, const char *old_path, const char *new_dir,
     if (require_writable(v)) return -1;
     if (!v) return -1;
 
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, old_path);
+    ntfs_inode *ni = open_public_inode(v, old_path, 0);
     if (!ni) return -1;
-    ntfs_inode *dir = ntfs_pathname_to_inode(v->vol, NULL, new_dir);
+    ntfs_inode *dir = open_public_inode(v, new_dir, 1);
     if (!dir) { ntfs_inode_close(ni); return -1; }
 
     ntfschar *ucs = NULL;
@@ -544,7 +618,7 @@ int nk_rename(nk_volume *v, const char *old_path, const char *new_dir,
 int nk_truncate(nk_volume *v, const char *path, long long size) {
     if (require_writable(v)) return -1;
     if (!v) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 0);
     if (!ni) return -1;
     int r = -1;
     ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
@@ -577,7 +651,7 @@ int nk_set_times(nk_volume *v, const char *path, long long atime,
                  long long mtime, long long btime) {
     if (require_writable(v)) return -1;
     if (!v) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) return -1;
     struct timespec ts = { 0, 0 };
     if (atime >= 0) { ts.tv_sec = (time_t)atime; ni->last_access_time = timespec2ntfs(ts); }
@@ -590,7 +664,7 @@ int nk_set_times(nk_volume *v, const char *path, long long atime,
 
 int nk_readlink(nk_volume *v, const char *path, char *buf, size_t buflen) {
     if (!v || !buf || buflen == 0) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) return -1;
     int r = -1;
     if (ni->flags & FILE_ATTR_REPARSE_POINT) {
@@ -626,7 +700,7 @@ int nk_create_symlink(nk_volume *v, const char *dir_path, const char *name,
                       const char *target) {
     if (require_writable(v)) return -1;
     if (!v) return -1;
-    ntfs_inode *dir = ntfs_pathname_to_inode(v->vol, NULL, dir_path);
+    ntfs_inode *dir = open_public_inode(v, dir_path, 1);
     if (!dir) return -1;
     ntfschar *uname = NULL, *utarget = NULL;
     int nlen = ntfs_mbstoucs(name, &uname);
@@ -690,7 +764,7 @@ static ntfschar *xattr_ucs(const char *name, int *out_len) {
 
 int nk_xattr_list(nk_volume *v, const char *path, nk_name_cb cb, void *ctx) {
     if (!v || !cb) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) return -1;
     int r = 0;
     ntfs_attr_search_ctx *sctx = ntfs_attr_get_search_ctx(ni, NULL);
@@ -718,7 +792,7 @@ long long nk_xattr_get(nk_volume *v, const char *path, const char *name,
     int nlen = 0;
     ntfschar *ucs = xattr_ucs(name, &nlen);
     if (!ucs) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) { free(ucs); return -1; }
     long long r = -1;
     ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, ucs, nlen);
@@ -744,7 +818,7 @@ int nk_xattr_set(nk_volume *v, const char *path, const char *name,
     int nlen = 0;
     ntfschar *ucs = xattr_ucs(name, &nlen);
     if (!ucs) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) { free(ucs); return -1; }
     int r = -1;
     ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, ucs, nlen);
@@ -771,7 +845,7 @@ int nk_xattr_remove(nk_volume *v, const char *path, const char *name) {
     int nlen = 0;
     ntfschar *ucs = xattr_ucs(name, &nlen);
     if (!ucs) return -1;
-    ntfs_inode *ni = ntfs_pathname_to_inode(v->vol, NULL, path);
+    ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) { free(ucs); return -1; }
     int r = -1;
     ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, ucs, nlen);

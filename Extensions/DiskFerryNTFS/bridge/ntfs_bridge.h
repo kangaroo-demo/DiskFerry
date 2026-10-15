@@ -80,6 +80,10 @@ int nk_statvfs(nk_volume *v, long long *total_bytes, long long *free_bytes,
 /* Volume label (UTF-8) into buf. Returns 0 on success. */
 int nk_label(nk_volume *v, char *buf, size_t buflen);
 
+/* Public paths are absolute and must not contain . or .. components. Internal
+ * NTFS metadata (including $Extend children/aliases) is unavailable to these
+ * file APIs. The root directory permits normal namespace, time and xattr
+ * operations, but cannot itself be renamed, removed or written as file data. */
 int nk_stat_path(nk_volume *v, const char *path, nk_stat *st);
 int nk_list(nk_volume *v, const char *dir_path, nk_dirent_cb cb, void *ctx);
 

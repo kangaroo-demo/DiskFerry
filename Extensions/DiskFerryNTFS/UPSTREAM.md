@@ -21,5 +21,6 @@ Local changes (2026-10-16):
 - Latch callback read/write/sync failures for the entire session; refuse subsequent mutations and never report a recovered callback as a clean shutdown.
 - Validate the Windows journal read-only before changing session state. Persist a dirty flag using a write-gated forensic handle before opening the normal writable engine; flush retained inode/index state and close the data handle before clearing only this session's flag.
 - Test actual child-process termination against ordinary NTFS images, plus initial-marker, recovered-sync, read/write and shutdown failures. These tests do not qualify FSKit resource persistence or hardware power loss.
+- Restrict public file APIs to the user namespace, checking actual inode IDs along the path and all filename parents. Reject internal metadata and $Extend entries, including aliases, before mutation while retaining root attributes and ordinary SYSTEM-flagged symlinks. Internal engine maintenance continues to use private metadata APIs.
 
 The engine is built from the pinned NTFS-3G source specified by `Scripts/prepare-ntfs-core.sh`. Building does not prove OS acceptance, resource access, filesystem semantics or safe writes. These require the staged tests and real signed-module qualification in [the release plan](../../docs/first-release-plan.md).
