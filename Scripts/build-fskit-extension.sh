@@ -27,7 +27,7 @@ xcrun clang -c -O2 -fPIC -DHAVE_CONFIG_H=1 -include "$TASK_ENGINE/config.h" \
 xcrun swiftc -swift-version 5 -warnings-as-errors -parse-as-library -O -target "$TASK_ARCH-apple-macos26.4" \
     -import-objc-header "$TASK_SOURCE/Bridging-Header.h" \
     "$TASK_SOURCE/DiskFerryNTFS.swift" "$TASK_SOURCE/NTFSItem.swift" "$TASK_SOURCE/NTFSVolume.swift" \
-    "$TASK_SOURCE/NTFSValidation.swift" \
+    "$TASK_SOURCE/NTFSValidation.swift" "$TASK_SOURCE/NTFSFileOperations.swift" \
     "$TASK_ROOT/Sources/DiskFerryCore/Backend.swift" \
     "$TASK_OUTPUT/ntfs_bridge.o" "$TASK_ENGINE/libntfs-3g/.libs/libntfs-3g.a" \
     -framework CoreFoundation -o "$TASK_OUTPUT/DiskFerryNTFS"

@@ -7,16 +7,32 @@ import FSKit
 /// Validate all requested changes before the first disk mutation. Unsupported
 /// ACL/flag operations must never report success or partially truncate a file.
 enum NTFSAttributePolicy {
+    static func defaults(type: FSItem.ItemType, uid: uid_t, gid: gid_t) -> FSItem.Attributes {
+        let attributes = FSItem.Attributes()
+        attributes.type = type
+        attributes.mode = type == .directory ? 0o040755 : type == .symlink ? 0o120755 : 0o100644
+        attributes.uid = uid
+        attributes.gid = gid
+        attributes.flags = 0
+        return attributes
+    }
+
     static func validate(_ request: FSItem.SetAttributesRequest,
-                         current: FSItem.Attributes, readOnly: Bool) throws -> FSItem.Attribute {
+                         current: FSItem.Attributes, readOnly: Bool,
+                         creating: Bool = false) throws -> FSItem.Attribute {
         func reject(_ code: Int32) throws -> Never {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
         }
         if readOnly { try reject(EROFS) }
-        let unsupported: [FSItem.Attribute] = [.type, .linkCount, .allocSize, .fileID, .parentID,
+        let unsupported: [FSItem.Attribute] = [.linkCount, .allocSize, .fileID, .parentID,
             .changeTime, .backupTime, .addedTime, .supportsLimitedXAttrs, .inhibitKernelOffloadedIO]
         if unsupported.contains(where: { request.isValid($0) }) { try reject(ENOTSUP) }
         var unchanged: FSItem.Attribute = []
+        if request.isValid(.type) {
+            guard creating else { try reject(ENOTSUP) }
+            guard request.type == current.type else { try reject(EINVAL) }
+            unchanged.insert(.type)
+        }
         if request.isValid(.mode) {
             guard request.mode & 0o7777 == current.mode & 0o7777 else { try reject(ENOTSUP) }
             unchanged.insert(.mode)

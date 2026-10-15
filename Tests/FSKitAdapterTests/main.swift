@@ -1,4 +1,4 @@
-// The test executable uses FSKit value objects, never a resource or device.
+// The test executable uses FSKit value objects and ordinary images, never a resource or device.
 import Foundation
 import FSKit
 import XCTest
@@ -92,6 +92,8 @@ import XCTest
 
 }
 
-let suite = ValidationTests.defaultTestSuite
+let suite = XCTestSuite(name: "FSKit adapter without system resources")
+suite.addTest(ValidationTests.defaultTestSuite)
+suite.addTest(CreationTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 9 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 17 ? 0 : 1)

@@ -453,17 +453,8 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     private func makeAttributes(path: String, st: nk_stat,
                                 identifier: FSItem.Identifier) -> FSItem.Attributes {
-        let attrs = FSItem.Attributes()
-        if st.is_symlink != 0 {
-            attrs.type = .symlink
-            attrs.mode = 0o120755
-        } else if st.is_dir != 0 {
-            attrs.type = .directory
-            attrs.mode = 0o040755
-        } else {
-            attrs.type = .file
-            attrs.mode = 0o0100644
-        }
+        let kind: FSItem.ItemType = st.is_symlink != 0 ? .symlink : st.is_dir != 0 ? .directory : .file
+        let attrs = NTFSAttributePolicy.defaults(type: kind, uid: getuid(), gid: getgid())
         attrs.size = UInt64(max(0, st.size))
         attrs.allocSize = UInt64(max(0, st.alloc_size))
         attrs.linkCount = 1
@@ -491,29 +482,22 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     func setAttributes(_ request: FSItem.SetAttributesRequest, on item: FSItem) async throws -> FSItem.Attributes {
         guard let item = item as? NTFSItem else { throw posix(EINVAL) }
-        let current = try await attributes(FSItem.GetAttributesRequest(), of: item)
-        let unchanged = try NTFSAttributePolicy.validate(request, current: current, readOnly: readOnly)
-        request.consumedAttributes.formUnion(unchanged)
-        if request.isValid(.size) {
-            let (rc, e) = engine {
-                item.path.withCString { nk_truncate(vol, $0, Int64(request.size)) }
+        return try stateLock.withLock {
+            let path = item.path
+            var st = nk_stat()
+            let (rc, e) = engine { path.withCString { nk_stat_path(vol, $0, &st) } }
+            guard rc == 0 else { throw posix(errno: e, or: ENOENT) }
+            let current = makeAttributes(path: path, st: st, identifier: item.identifier)
+            let unchanged = try NTFSAttributePolicy.validate(request, current: current, readOnly: readOnly)
+            try engineQueue.sync {
+                try NTFSFileOperations.apply(request, to: path, volume: vol, unchanged: unchanged)
+                errno = 0
+                guard path.withCString({ nk_stat_path(vol, $0, &st) }) == 0 else {
+                    throw posix(errno: errno)
+                }
             }
-            guard rc == 0 else { throw posix(errno: e) }
-            request.consumedAttributes.insert(.size)
+            return makeAttributes(path: path, st: st, identifier: item.identifier)
         }
-        let atime = request.isValid(.accessTime) ? Int64(request.accessTime.tv_sec) : Int64(-1)
-        let mtime = request.isValid(.modifyTime) ? Int64(request.modifyTime.tv_sec) : Int64(-1)
-        let btime = request.isValid(.birthTime) ? Int64(request.birthTime.tv_sec) : Int64(-1)
-        if atime >= 0 || mtime >= 0 || btime >= 0 {
-            let (rc, e) = engine {
-                item.path.withCString { nk_set_times(vol, $0, atime, mtime, btime) }
-            }
-            guard rc == 0 else { throw posix(errno: e) }
-            for attribute: FSItem.Attribute in [.accessTime, .modifyTime, .birthTime] where request.isValid(attribute) {
-                request.consumedAttributes.insert(attribute)
-            }
-        }
-        return try await attributes(FSItem.GetAttributesRequest(), of: item)
     }
 
     // MARK: lookup / enumerate
@@ -612,15 +596,21 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         // Engine op + cache bookkeeping in one stateLock hold (see lookupItem).
         return try stateLock.withLock {
             let dirPath = dir.path
-            let (rc, e) = engine {
-                dirPath.withCString { dp in
-                    childName.withCString { np in
-                        type == .directory ? nk_mkdir(vol, dp, np) : nk_create(vol, dp, np)
-                    }
-                }
-            }
-            guard rc == 0 else { throw posix(errno: e) }
             let childPath = dir.childPath(childName)
+            do {
+                try engineQueue.sync {
+                    try NTFSFileOperations.create(volume: vol, parent: dirPath, name: childName,
+                                                  type: type, attributes: newAttributes, readOnly: readOnly)
+                }
+            } catch {
+                // A failed configuration may have created and removed the
+                // name, or left it behind after a device fault.
+                mutateNamespace([dirPath, childPath])
+                if (error as NSError).userInfo["DiskFerryRollbackFailed"] as? Bool == true {
+                    log.error("create rollback failed at \(childPath, privacy: .public)")
+                }
+                throw error
+            }
             mutateNamespace([dirPath, childPath])
             return (item(path: childPath, kind: type), name)
         }
@@ -858,15 +848,20 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         if readOnly { throw posix(EROFS) }
         return try stateLock.withLock {
             let dirPath = dir.path
-            let (rc, e) = engine {
-                dirPath.withCString { dp in
-                    linkName.withCString { np in
-                        target.withCString { tp in nk_create_symlink(vol, dp, np, tp) }
-                    }
-                }
-            }
-            guard rc == 0 else { throw posix(errno: e) }
             let childPath = dir.childPath(linkName)
+            do {
+                try engineQueue.sync {
+                    try NTFSFileOperations.create(volume: vol, parent: dirPath, name: linkName,
+                                                  type: .symlink, attributes: attributes, readOnly: readOnly,
+                                                  symlinkTarget: target)
+                }
+            } catch {
+                mutateNamespace([dirPath, childPath])
+                if (error as NSError).userInfo["DiskFerryRollbackFailed"] as? Bool == true {
+                    log.error("symlink create rollback failed at \(childPath, privacy: .public)")
+                }
+                throw error
+            }
             mutateNamespace([dirPath, childPath])
             return (item(path: childPath, kind: .symlink), name)
         }

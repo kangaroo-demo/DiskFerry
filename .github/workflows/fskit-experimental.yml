@@ -38,7 +38,7 @@ jobs:
         run: bash Scripts/prepare-ntfs-core.sh
       - name: Test callback bridge with disposable NTFS images
         run: python3 Tests/NTFSBridgeTests/test_ntfs_bridge.py
-      - name: Test FSKit attribute and geometry validation without resources
+      - name: Test FSKit validation and file creation without system resources
         run: bash Scripts/test-fskit-adapter.sh
       - name: Build default Universal 2 host
         run: bash Scripts/build-app.sh
