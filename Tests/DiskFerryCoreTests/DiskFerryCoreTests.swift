@@ -53,6 +53,15 @@ func rejectsUnsafeDeviceIdentifiers(_ value: String) {
     #expect(volume.totalBytes == 5_000_000_000)
 }
 
+@Test func diskFerryExtensionTypeRemainsNTFSWithoutClaimingWriteCapability() throws {
+    let data = try info(["FilesystemType": "diskferry_ntfs", "WritableMedia": true,
+                         "WritableVolume": false, "MountPoint": "/Volumes/Test"])
+    let volume = try #require(try DiskutilParser.volume(from: data, expectedID: expectedID))
+    #expect(volume.fileSystem == .ntfs)
+    #expect(volume.access == .readOnly)
+    #expect(!WriteAssessment(volume: volume).isAllowed)
+}
+
 @Test func missingWritableVolumeRemainsUnknown() throws {
     let data = try info(["FilesystemType": "ntfs", "WritableMedia": true, "Writable": true, "MountPoint": "/Volumes/Test"])
     let volume = try #require(try DiskutilParser.volume(from: data, expectedID: expectedID))

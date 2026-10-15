@@ -93,8 +93,12 @@ swift test
 
 下一步是建立可签名的 FSKit 扩展、验证受控资源接入与只读挂载，再实现并验证 NTFS 写入。详见 [技术路线](docs/DiskFerry-技术路线与实施计划-v0.2.md) 和 [开发验证记录](docs/DiskFerry-首轮开发与验证-2026-10-09.md)。
 
+首个正式版本现按 [实盘验收与发布计划](docs/first-release-plan.md) 推进。`Extensions/DiskFerryNTFS/` 和 `DiskFerryFSKit.xcodeproj` 是独立的实验扩展工作，尚未完成系统接纳或实际 FSKit 挂载，默认构建不包含它。开发步骤见 [FSKit 开发说明](docs/fskit-development.md)。
+
+实验扩展现有 NTFS 镜像、属性和资源边界测试；U 盘工具另有不访问设备的路径与身份保护测试。实盘 FAT32 校验与 NTFS 镜像校验分别记录，均不代表 Finder 已可写入 NTFS。
+
 ## 参与与许可
 
 欢迎通过 [Issues](https://github.com/kangaroo-demo/DiskFerry/issues) 或 Pull Request 提交反馈与改进，参见 [贡献指南](CONTRIBUTING.md)。提交诊断信息前请去除卷名、UUID、挂载路径及个人信息。
 
-本仓库自身的源码、文档和品牌素材沿用 [MIT License](LICENSE)。可选验证工具 NTFS-3G 和 pkgconf 使用各自的许可证，当前未捆绑或链接进应用；后续集成 NTFS-3G 时需按最终组合履行 GPL 等义务，不能以本仓库 MIT 许可替代。参见 [第三方组件说明](THIRD_PARTY_NOTICES.md)。
+除单独声明外，本仓库自身的源码、文档和品牌素材沿用 [MIT License](LICENSE)。实验 NTFS 扩展整体按 GPL-2.0-only 提供，包含固定 NTFS-3G 核心与 GPL 适配代码；默认菜单栏控制层构建仍为 MIT。NTFS-3G、pkgconf 等依赖保留各自许可，不能以本仓库 MIT 许可替代。参见 [第三方组件说明](THIRD_PARTY_NOTICES.md)。

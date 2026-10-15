@@ -1,0 +1,40 @@
+name: Experimental FSKit build and image tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  experimental-extension:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require macOS and SDK 26.4 or newer
+        run: |
+          xcodebuild -version
+          python3 - <<'PY'
+          import platform, subprocess
+          def version(text):
+              return tuple(int(value) for value in text.strip().split('.')[:2])
+          sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-version'], text=True)
+          if version(platform.mac_ver()[0]) < (26, 4) or version(sdk) < (26, 4):
+              raise SystemExit('This experimental module needs macOS and SDK 26.4+. Select a qualified runner; no check is skipped.')
+          PY
+      - name: Build pinned NTFS core locally
+        run: bash Scripts/prepare-ntfs-core.sh
+      - name: Test callback bridge with disposable NTFS images
+        run: python3 Tests/NTFSBridgeTests/test_ntfs_bridge.py
+      - name: Test FSKit attribute and geometry validation without resources
+        run: bash Scripts/test-fskit-adapter.sh
+      - name: Build default Universal 2 host
+        run: bash Scripts/build-app.sh
+      - name: Build experimental native extension and verify bundle integrity
+        run: bash Scripts/build-fskit-extension.sh
+      - name: Build native Xcode project without signing
+        run: |
+          xcodebuild -project DiskFerryFSKit.xcodeproj -scheme DiskFerry \
+            -configuration Debug -derivedDataPath .build/xcode-fskit \
+            CODE_SIGNING_ALLOWED=NO build

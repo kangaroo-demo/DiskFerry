@@ -1,14 +1,20 @@
 # 第三方组件说明
 
-仓库自身的代码、文档与品牌素材沿用根目录 [MIT License](LICENSE)。以下工具及平台使用各自的许可；本仓库的 MIT 许可不改变第三方许可。
+除单独注明许可的文件外，仓库自身的代码、文档与品牌素材沿用根目录 [MIT License](LICENSE)。`Extensions/DiskFerryNTFS/` 实验扩展整体使用 GPL-2.0-only，不能按根目录 MIT 许可再许可。以下工具及平台使用各自的许可。
 
 ## 应用构建
 
-当前 Swift Package 没有外部包依赖，也未链接或捆绑 NTFS-3G、pkgconf、macFUSE 或第三方驱动。应用使用 macOS 随系统提供的 Foundation、AppKit、SwiftUI、Combine、Disk Arbitration、IOKit、ServiceManagement 和 FSKit 等公开框架，以及系统命令。Apple 框架、SDK 和工具并非本仓库再许可的代码。
+默认 Swift Package / `Scripts/build-app.sh` 构建没有外部包依赖，也未链接或捆绑 NTFS-3G、pkgconf、macFUSE 或第三方驱动。应用使用 macOS 随系统提供的 Foundation、AppKit、SwiftUI、Combine、Disk Arbitration、IOKit、ServiceManagement 和 FSKit 等公开框架，以及系统命令。Apple 框架、SDK 和工具并非本仓库再许可的代码。
+
+## 实验 FSKit 扩展
+
+`Extensions/DiskFerryNTFS/` 的部分代码来自 [NTFSKit 的 GPL 驱动](https://github.com/whereteam/ntfskit/tree/96ecccb1b1f6dba2ecd158ed0ff9a21e7917c80d/NTFSModule)，固定提交 `96ecccb1b1f6dba2ecd158ed0ff9a21e7917c80d`，原项目归属 DNA MAKER COMPANY LIMITED 及贡献者。未引入其专有宿主界面。原许可文本和本地修改清单见 [GPLv2](Extensions/DiskFerryNTFS/LICENSE.GPL2) 与 [UPSTREAM.md](Extensions/DiskFerryNTFS/UPSTREAM.md)。
+
+单独的 `Scripts/build-fskit-extension.sh` 或 `DiskFerryFSKit.xcodeproj` 会将固定 NTFS-3G 静态库链接到实验扩展；不链接到 MIT 菜单栏宿主。扩展整体按 GPL-2.0-only 提供，桥接 C 文件原有 GPL-2.0-or-later 声明及其他文件声明保留。实验包包含相关许可文本；未来向他人提供二进制时还须提供匹配的完整对应源码及构建信息。当前扩展未通过系统签名接纳、真实资源挂载和正式分发验收，不在正式 Release 中交付。
 
 ## 可选 NTFS 镜像验证工具
 
-`Scripts/prepare-ntfs-core.sh` 从以下来源下载固定版本，核验 SHA-256，并在忽略的 `.build/vendor/` 中构建。上游源码、版权声明和许可证保留在下载包内；当前源码仓库和应用包不包含这些库或工具。
+`Scripts/prepare-ntfs-core.sh` 从以下来源下载固定版本，核验 SHA-256，并在忽略的 `.build/vendor/` 中构建。上游源码、版权声明和许可证保留在下载包内；默认控制层应用不包含这些库或工具。实验扩展的链接范围见上一节。
 
 | 组件 | 版本 | 来源 | 许可 |
 | --- | --- | --- | --- |

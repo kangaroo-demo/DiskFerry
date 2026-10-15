@@ -1,0 +1,898 @@
+// !$*UTF8*$!
+{
+	"archiveVersion" = "1";
+	"classes" = {
+	};
+	"objectVersion" = "56";
+	"objects" = {
+		"EBF77FA8E11685D013DA1694" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.framework";
+			"includeInIndex" = "0";
+			"path" = "DiskFerryCore.framework";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"81F31879437340D5CD6ED968" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.application";
+			"includeInIndex" = "0";
+			"path" = "DiskFerry.app";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"69DC2EFD233B62AF1DCCB79C" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.app-extension";
+			"includeInIndex" = "0";
+			"path" = "DiskFerryNTFS.appex";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"0A3E27B8CA818264D75C8D81" = {
+			"isa" = "PBXGroup";
+			"children" = (
+				"81F31879437340D5CD6ED968",
+				"EBF77FA8E11685D013DA1694",
+				"69DC2EFD233B62AF1DCCB79C",
+			);
+			"name" = "Products";
+			"sourceTree" = "<group>";
+		};
+		"C05D5FDFED3157D9A46BAD2B" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryCore/Backend.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"CCC5734EE458BF45F41BFAB4" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "C05D5FDFED3157D9A46BAD2B";
+		};
+		"81DB1289FC2F382E5635744E" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryCore/Discovery.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"3CD618344B3C4AD9959DD8D8" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "81DB1289FC2F382E5635744E";
+		};
+		"336D46193EFB0753B09433D5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryCore/DiskutilParser.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"862B4E1EBB7DF90B902F9F47" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "336D46193EFB0753B09433D5";
+		};
+		"A08A239BC9997CB290C830D1" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryCore/Ejection.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"CA9AA06E06A5D8BEC416DD33" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A08A239BC9997CB290C830D1";
+		};
+		"A17B1772D0352BA9AD5C9475" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryCore/Environment.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"83473B9C1BB21F3613952F3D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A17B1772D0352BA9AD5C9475";
+		};
+		"9257B145132B3B0952D48132" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryCore/LiveDiskIdentity.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"B36EA60AA55F19BA111B9EF8" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "9257B145132B3B0952D48132";
+		};
+		"2C33525A38012CF4858D7B67" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryCore/Preferences.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"DF9590104D8F322AE177D6FB" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "2C33525A38012CF4858D7B67";
+		};
+		"7665D45B09E453FE01A03F58" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryCore/Volume.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"9C9160F051A1494CF312317B" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "7665D45B09E453FE01A03F58";
+		};
+		"0FC23D5B493A7A7F80A2C311" = {
+			"isa" = "PBXGroup";
+			"children" = (
+				"C05D5FDFED3157D9A46BAD2B",
+				"81DB1289FC2F382E5635744E",
+				"336D46193EFB0753B09433D5",
+				"A08A239BC9997CB290C830D1",
+				"A17B1772D0352BA9AD5C9475",
+				"9257B145132B3B0952D48132",
+				"2C33525A38012CF4858D7B67",
+				"7665D45B09E453FE01A03F58",
+			);
+			"name" = "Sources/DiskFerryCore";
+			"sourceTree" = "<group>";
+		};
+		"54DF1FB4EBB4583D68AF610B" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryApp/AppModel.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"E2BAE0C11E86DAD4CE92BFC0" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "54DF1FB4EBB4583D68AF610B";
+		};
+		"1346937DA48F546D66FBE13F" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryApp/DiskFerryApp.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"57E3C46C73C2645B4A498998" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "1346937DA48F546D66FBE13F";
+		};
+		"0A446A85FA4F693D1DEAF888" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryApp/LoginItemController.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"7E49C927605BF9FD7BAD89D6" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0A446A85FA4F693D1DEAF888";
+		};
+		"D3BDC056196A8FBBD011EFAC" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryApp/LoginItemSettingsRow.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"AACA94E4B16EAFA97DF7E350" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "D3BDC056196A8FBBD011EFAC";
+		};
+		"F3383E0923105EAA2F06FC7F" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryApp/SettingsView.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"9F2EF713DD5D3C8300DA55A9" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F3383E0923105EAA2F06FC7F";
+		};
+		"A41DFE310E1345FE0D7CCF22" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/DiskFerryApp/StatusBarController.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"D3518F5AC2D33A14ADAE2816" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A41DFE310E1345FE0D7CCF22";
+		};
+		"085ED06E573690BA3A56BC1E" = {
+			"isa" = "PBXGroup";
+			"children" = (
+				"54DF1FB4EBB4583D68AF610B",
+				"1346937DA48F546D66FBE13F",
+				"0A446A85FA4F693D1DEAF888",
+				"D3BDC056196A8FBBD011EFAC",
+				"F3383E0923105EAA2F06FC7F",
+				"A41DFE310E1345FE0D7CCF22",
+			);
+			"name" = "Sources/DiskFerryApp";
+			"sourceTree" = "<group>";
+		};
+		"A8321DA5B2DFE45392ADB406" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.h";
+			"path" = "Extensions/DiskFerryNTFS/Bridging-Header.h";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"9BEF94A7550AD4F6FF7BC079" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Extensions/DiskFerryNTFS/DiskFerryNTFS.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F3B257A9AFDFE078D0C4AAE4" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "9BEF94A7550AD4F6FF7BC079";
+		};
+		"D00060327BFFB3A63C9E51DD" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.xml";
+			"path" = "Extensions/DiskFerryNTFS/Entitlements.plist";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F91E0CAADCC5569C75A9C859" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.xml";
+			"path" = "Extensions/DiskFerryNTFS/Info.plist";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"69A4119F4AC952B654FCA0E5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Extensions/DiskFerryNTFS/NTFSItem.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"AAD6FC5F0CF222E5D1A01176" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "69A4119F4AC952B654FCA0E5";
+		};
+		"CF0171AF69F97E257592A62E" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Extensions/DiskFerryNTFS/NTFSValidation.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"979291C96C840059634523EA" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "CF0171AF69F97E257592A62E";
+		};
+		"4737F621201107E929969A2F" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Extensions/DiskFerryNTFS/NTFSVolume.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"86E84D222BBCADDFFC0F75A2" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "4737F621201107E929969A2F";
+		};
+		"A9537553D8DD07378C7AE4D5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.c";
+			"path" = "Extensions/DiskFerryNTFS/bridge/ntfs_bridge.c";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"5AF61C508BB9BFCB464FFB4C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A9537553D8DD07378C7AE4D5";
+		};
+		"42F14FD32887C0A10D7DF353" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.h";
+			"path" = "Extensions/DiskFerryNTFS/bridge/ntfs_bridge.h";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"BE2C2DAFE30ED3B9142D5DDC" = {
+			"isa" = "PBXGroup";
+			"children" = (
+				"A8321DA5B2DFE45392ADB406",
+				"9BEF94A7550AD4F6FF7BC079",
+				"D00060327BFFB3A63C9E51DD",
+				"F91E0CAADCC5569C75A9C859",
+				"69A4119F4AC952B654FCA0E5",
+				"CF0171AF69F97E257592A62E",
+				"4737F621201107E929969A2F",
+				"A9537553D8DD07378C7AE4D5",
+				"42F14FD32887C0A10D7DF353",
+			);
+			"name" = "Extensions/DiskFerryNTFS";
+			"sourceTree" = "<group>";
+		};
+		"9091D3E5CFE5143800C67E3A" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "C05D5FDFED3157D9A46BAD2B";
+		};
+		"CB50C23B77D794F7C85DFA2D" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "image.icns";
+			"path" = "Resources/Brand/app-icons/icns/diskferry-graphite.icns";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"5318E19337B000B06F194979" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.xml";
+			"path" = "Resources/Info.plist";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"99E0BE0AD55A3383A2B5DCB3" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "Extensions/DiskFerryNTFS/LICENSE.GPL2";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"41BDF3DA143F2497CB801F5A" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = ".build/vendor/ntfs-3g-2026.9.28/COPYING";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"116CB72222C77AED37D1D54C" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "Extensions/DiskFerryNTFS/UPSTREAM.md";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"68C71AAA9684D21DE050D14D" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "archive.ar";
+			"path" = ".build/vendor/ntfs-3g-2026.9.28/libntfs-3g/.libs/libntfs-3g.a";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"2B1C52BD870760779685BF3F" = {
+			"isa" = "PBXGroup";
+			"children" = (
+				"CB50C23B77D794F7C85DFA2D",
+				"5318E19337B000B06F194979",
+				"99E0BE0AD55A3383A2B5DCB3",
+				"41BDF3DA143F2497CB801F5A",
+				"116CB72222C77AED37D1D54C",
+				"68C71AAA9684D21DE050D14D",
+			);
+			"name" = "Resources and engine";
+			"sourceTree" = "<group>";
+		};
+		"19F479106CE8C3BA8C106518" = {
+			"isa" = "PBXGroup";
+			"children" = (
+				"0FC23D5B493A7A7F80A2C311",
+				"085ED06E573690BA3A56BC1E",
+				"BE2C2DAFE30ED3B9142D5DDC",
+				"2B1C52BD870760779685BF3F",
+				"0A3E27B8CA818264D75C8D81",
+			);
+			"sourceTree" = "<group>";
+		};
+		"0A3160008C4BBF1E86B81421" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"CCC5734EE458BF45F41BFAB4",
+				"3CD618344B3C4AD9959DD8D8",
+				"862B4E1EBB7DF90B902F9F47",
+				"CA9AA06E06A5D8BEC416DD33",
+				"83473B9C1BB21F3613952F3D",
+				"B36EA60AA55F19BA111B9EF8",
+				"DF9590104D8F322AE177D6FB",
+				"9C9160F051A1494CF312317B",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"9DC66203F9791EB2EDFDE0F5" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"9C08CB7BFDB2B0209F55F908" = {
+			"isa" = "PBXResourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"47F5FC247E2398CE7CE0C4F4" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"SDKROOT" = "macosx";
+				"ARCHS" = "$(NATIVE_ARCH_ACTUAL)";
+				"ONLY_ACTIVE_ARCH" = "YES";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"SWIFT_VERSION" = "6.0";
+				"MACOSX_DEPLOYMENT_TARGET" = "13.0";
+				"MARKETING_VERSION" = "0.2.0";
+				"CURRENT_PROJECT_VERSION" = "2";
+				"PRODUCT_NAME" = "DiskFerryCore";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "dev.diskferry.core";
+				"DEFINES_MODULE" = "YES";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"SKIP_INSTALL" = "YES";
+				"DYLIB_INSTALL_NAME_BASE" = "@rpath";
+				"INSTALL_PATH" = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf";
+			};
+		};
+		"1021D15D609828F0A65D2EA8" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"SDKROOT" = "macosx";
+				"ARCHS" = "$(NATIVE_ARCH_ACTUAL)";
+				"ONLY_ACTIVE_ARCH" = "YES";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"SWIFT_VERSION" = "6.0";
+				"MACOSX_DEPLOYMENT_TARGET" = "13.0";
+				"MARKETING_VERSION" = "0.2.0";
+				"CURRENT_PROJECT_VERSION" = "2";
+				"PRODUCT_NAME" = "DiskFerryCore";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "dev.diskferry.core";
+				"DEFINES_MODULE" = "YES";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"SKIP_INSTALL" = "YES";
+				"DYLIB_INSTALL_NAME_BASE" = "@rpath";
+				"INSTALL_PATH" = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+			};
+		};
+		"5F5D49598CFC2B065F065014" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = (
+				"47F5FC247E2398CE7CE0C4F4",
+				"1021D15D609828F0A65D2EA8",
+			);
+			"defaultConfigurationIsVisible" = "0";
+			"defaultConfigurationName" = "Release";
+		};
+		"C4CC2493604B13F9FCFC73FE" = {
+			"isa" = "PBXNativeTarget";
+			"name" = "DiskFerryCore";
+			"productName" = "DiskFerryCore";
+			"productReference" = "EBF77FA8E11685D013DA1694";
+			"productType" = "com.apple.product-type.framework";
+			"buildConfigurationList" = "5F5D49598CFC2B065F065014";
+			"buildPhases" = (
+				"0A3160008C4BBF1E86B81421",
+				"9DC66203F9791EB2EDFDE0F5",
+				"9C08CB7BFDB2B0209F55F908",
+			);
+			"buildRules" = (
+			);
+			"dependencies" = (
+			);
+		};
+		"F0F08ED7E4DFA6BD02F24309" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "68C71AAA9684D21DE050D14D";
+		};
+		"40F4B185F38EBC8132A11457" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "99E0BE0AD55A3383A2B5DCB3";
+		};
+		"A70CB65431504504B9B3A39D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "41BDF3DA143F2497CB801F5A";
+		};
+		"27DBDF2DEAA7A20118C6406F" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "116CB72222C77AED37D1D54C";
+		};
+		"0E941468E88EBBB1B465A65A" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"F3B257A9AFDFE078D0C4AAE4",
+				"AAD6FC5F0CF222E5D1A01176",
+				"979291C96C840059634523EA",
+				"86E84D222BBCADDFFC0F75A2",
+				"5AF61C508BB9BFCB464FFB4C",
+				"9091D3E5CFE5143800C67E3A",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"00B8E8264F31F2F3F4BF1ED3" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"F0F08ED7E4DFA6BD02F24309",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"D2879616F5B5E1B332929989" = {
+			"isa" = "PBXResourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"40F4B185F38EBC8132A11457",
+				"A70CB65431504504B9B3A39D",
+				"27DBDF2DEAA7A20118C6406F",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"7CD9EAEC47752F794C6BF2C7" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"SDKROOT" = "macosx";
+				"ARCHS" = "$(NATIVE_ARCH_ACTUAL)";
+				"ONLY_ACTIVE_ARCH" = "YES";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"SWIFT_VERSION" = "5.0";
+				"MACOSX_DEPLOYMENT_TARGET" = "26.4";
+				"MARKETING_VERSION" = "0.2.0";
+				"CURRENT_PROJECT_VERSION" = "2";
+				"LIBRARY_SEARCH_PATHS" = (
+					"$(inherited)",
+					"$(SRCROOT)/.build/vendor/ntfs-3g-2026.9.28/libntfs-3g/.libs",
+				);
+				"ENABLE_DEBUG_DYLIB" = "NO";
+				"PRODUCT_NAME" = "DiskFerryNTFS";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "dev.diskferry.app.ntfs";
+				"INFOPLIST_FILE" = "Extensions/DiskFerryNTFS/Info.plist";
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"CODE_SIGN_ENTITLEMENTS" = "Extensions/DiskFerryNTFS/Entitlements.plist";
+				"ENABLE_APP_SANDBOX" = "YES";
+				"ENABLE_HARDENED_RUNTIME" = "YES";
+				"SKIP_INSTALL" = "YES";
+				"SWIFT_OBJC_BRIDGING_HEADER" = "Extensions/DiskFerryNTFS/Bridging-Header.h";
+				"GCC_PREPROCESSOR_DEFINITIONS" = (
+					"$(inherited)",
+					"HAVE_CONFIG_H=1",
+				);
+				"GCC_PREFIX_HEADER" = ".build/vendor/ntfs-3g-2026.9.28/config.h";
+				"HEADER_SEARCH_PATHS" = (
+					"$(inherited)",
+					"$(SRCROOT)/.build/vendor/ntfs-3g-2026.9.28",
+					"$(SRCROOT)/.build/vendor/ntfs-3g-2026.9.28/include",
+					"$(SRCROOT)/.build/vendor/ntfs-3g-2026.9.28/include/ntfs-3g",
+				);
+				"OTHER_LDFLAGS" = (
+					"$(inherited)",
+					"-framework",
+					"CoreFoundation",
+				);
+				"LD_RUNPATH_SEARCH_PATHS" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf";
+			};
+		};
+		"BB95040E4FDC2384891B3B35" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"SDKROOT" = "macosx";
+				"ARCHS" = "$(NATIVE_ARCH_ACTUAL)";
+				"ONLY_ACTIVE_ARCH" = "YES";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"SWIFT_VERSION" = "5.0";
+				"MACOSX_DEPLOYMENT_TARGET" = "26.4";
+				"MARKETING_VERSION" = "0.2.0";
+				"CURRENT_PROJECT_VERSION" = "2";
+				"LIBRARY_SEARCH_PATHS" = (
+					"$(inherited)",
+					"$(SRCROOT)/.build/vendor/ntfs-3g-2026.9.28/libntfs-3g/.libs",
+				);
+				"ENABLE_DEBUG_DYLIB" = "NO";
+				"PRODUCT_NAME" = "DiskFerryNTFS";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "dev.diskferry.app.ntfs";
+				"INFOPLIST_FILE" = "Extensions/DiskFerryNTFS/Info.plist";
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"CODE_SIGN_ENTITLEMENTS" = "Extensions/DiskFerryNTFS/Entitlements.plist";
+				"ENABLE_APP_SANDBOX" = "YES";
+				"ENABLE_HARDENED_RUNTIME" = "YES";
+				"SKIP_INSTALL" = "YES";
+				"SWIFT_OBJC_BRIDGING_HEADER" = "Extensions/DiskFerryNTFS/Bridging-Header.h";
+				"GCC_PREPROCESSOR_DEFINITIONS" = (
+					"$(inherited)",
+					"HAVE_CONFIG_H=1",
+				);
+				"GCC_PREFIX_HEADER" = ".build/vendor/ntfs-3g-2026.9.28/config.h";
+				"HEADER_SEARCH_PATHS" = (
+					"$(inherited)",
+					"$(SRCROOT)/.build/vendor/ntfs-3g-2026.9.28",
+					"$(SRCROOT)/.build/vendor/ntfs-3g-2026.9.28/include",
+					"$(SRCROOT)/.build/vendor/ntfs-3g-2026.9.28/include/ntfs-3g",
+				);
+				"OTHER_LDFLAGS" = (
+					"$(inherited)",
+					"-framework",
+					"CoreFoundation",
+				);
+				"LD_RUNPATH_SEARCH_PATHS" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+			};
+		};
+		"B0F7F2C54C54E9D2422D30E5" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = (
+				"7CD9EAEC47752F794C6BF2C7",
+				"BB95040E4FDC2384891B3B35",
+			);
+			"defaultConfigurationIsVisible" = "0";
+			"defaultConfigurationName" = "Release";
+		};
+		"C08D743E086FDC2F47462338" = {
+			"isa" = "PBXNativeTarget";
+			"name" = "DiskFerryNTFS";
+			"productName" = "DiskFerryNTFS";
+			"productReference" = "69DC2EFD233B62AF1DCCB79C";
+			"productType" = "com.apple.product-type.extensionkit-extension";
+			"buildConfigurationList" = "B0F7F2C54C54E9D2422D30E5";
+			"buildPhases" = (
+				"0E941468E88EBBB1B465A65A",
+				"00B8E8264F31F2F3F4BF1ED3",
+				"D2879616F5B5E1B332929989",
+			);
+			"buildRules" = (
+			);
+			"dependencies" = (
+			);
+		};
+		"7D0F7E80F1F93BAD3F0A956D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "EBF77FA8E11685D013DA1694";
+		};
+		"2691F28C2997B5D4774D4A10" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "CB50C23B77D794F7C85DFA2D";
+		};
+		"6ACE7BC297BF23705D4E5F56" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"E2BAE0C11E86DAD4CE92BFC0",
+				"57E3C46C73C2645B4A498998",
+				"7E49C927605BF9FD7BAD89D6",
+				"AACA94E4B16EAFA97DF7E350",
+				"9F2EF713DD5D3C8300DA55A9",
+				"D3518F5AC2D33A14ADAE2816",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"13D58F750C9F7A867F986420" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"7D0F7E80F1F93BAD3F0A956D",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"EB12F685944315C425ABFF58" = {
+			"isa" = "PBXResourcesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"2691F28C2997B5D4774D4A10",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+		};
+		"AB00255049ED0D95F2F0606D" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"SDKROOT" = "macosx";
+				"ARCHS" = "$(NATIVE_ARCH_ACTUAL)";
+				"ONLY_ACTIVE_ARCH" = "YES";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"SWIFT_VERSION" = "6.0";
+				"MACOSX_DEPLOYMENT_TARGET" = "13.0";
+				"MARKETING_VERSION" = "0.2.0";
+				"CURRENT_PROJECT_VERSION" = "2";
+				"PRODUCT_NAME" = "DiskFerry";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "dev.diskferry.app";
+				"INFOPLIST_FILE" = "Resources/Info.plist";
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"LD_RUNPATH_SEARCH_PATHS" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				"ENABLE_HARDENED_RUNTIME" = "YES";
+				"COMBINE_HIDPI_IMAGES" = "YES";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf";
+			};
+		};
+		"D4A96B521F3D78469F32E0BE" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"SDKROOT" = "macosx";
+				"ARCHS" = "$(NATIVE_ARCH_ACTUAL)";
+				"ONLY_ACTIVE_ARCH" = "YES";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"SWIFT_VERSION" = "6.0";
+				"MACOSX_DEPLOYMENT_TARGET" = "13.0";
+				"MARKETING_VERSION" = "0.2.0";
+				"CURRENT_PROJECT_VERSION" = "2";
+				"PRODUCT_NAME" = "DiskFerry";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "dev.diskferry.app";
+				"INFOPLIST_FILE" = "Resources/Info.plist";
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"LD_RUNPATH_SEARCH_PATHS" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				"ENABLE_HARDENED_RUNTIME" = "YES";
+				"COMBINE_HIDPI_IMAGES" = "YES";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+			};
+		};
+		"7FA7C6DD60DC323C7F3FA76C" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = (
+				"AB00255049ED0D95F2F0606D",
+				"D4A96B521F3D78469F32E0BE",
+			);
+			"defaultConfigurationIsVisible" = "0";
+			"defaultConfigurationName" = "Release";
+		};
+		"8C1A045E96B998B40533C7FF" = {
+			"isa" = "PBXNativeTarget";
+			"name" = "DiskFerry";
+			"productName" = "DiskFerry";
+			"productReference" = "81F31879437340D5CD6ED968";
+			"productType" = "com.apple.product-type.application";
+			"buildConfigurationList" = "7FA7C6DD60DC323C7F3FA76C";
+			"buildPhases" = (
+				"6ACE7BC297BF23705D4E5F56",
+				"13D58F750C9F7A867F986420",
+				"EB12F685944315C425ABFF58",
+				"EF717121311EEA0BBDC81693",
+				"8A41A08DD439089EF3ABC757",
+				"B1D86B86BBEAC8F5A720DFA3",
+			);
+			"buildRules" = (
+			);
+			"dependencies" = (
+				"CAC5183A76DBAECBF97660EF",
+				"3867DD4E11B667D506FE21D4",
+			);
+		};
+		"81F437C4A4DA705496902E34" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "EBF77FA8E11685D013DA1694";
+			"settings" = {
+				"ATTRIBUTES" = (
+					"CodeSignOnCopy",
+					"RemoveHeadersOnCopy",
+				);
+			};
+		};
+		"EF717121311EEA0BBDC81693" = {
+			"isa" = "PBXCopyFilesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"81F437C4A4DA705496902E34",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+			"name" = "Embed Frameworks";
+			"dstPath" = "";
+			"dstSubfolderSpec" = "10";
+		};
+		"47DDF2E758942988E6AE6498" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "69DC2EFD233B62AF1DCCB79C";
+			"settings" = {
+				"ATTRIBUTES" = (
+					"CodeSignOnCopy",
+					"RemoveHeadersOnCopy",
+				);
+			};
+		};
+		"8A41A08DD439089EF3ABC757" = {
+			"isa" = "PBXCopyFilesBuildPhase";
+			"buildActionMask" = "2147483647";
+			"files" = (
+				"47DDF2E758942988E6AE6498",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+			"name" = "Embed FSKit Extension";
+			"dstPath" = "$(CONTENTS_FOLDER_PATH)/Extensions";
+			"dstSubfolderSpec" = "16";
+		};
+		"B1D86B86BBEAC8F5A720DFA3" = {
+			"isa" = "PBXShellScriptBuildPhase";
+			"name" = "Copy AppIcon";
+			"buildActionMask" = "2147483647";
+			"files" = (
+			);
+			"inputPaths" = (
+				"$(SRCROOT)/Resources/Brand/app-icons/icns/diskferry-graphite.icns",
+			);
+			"outputPaths" = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppIcon.icns",
+			);
+			"runOnlyForDeploymentPostprocessing" = "0";
+			"shellPath" = "/bin/sh";
+			"shellScript" = "set -eu
+mkdir -p \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"
+cp \"${SRCROOT}/Resources/Brand/app-icons/icns/diskferry-graphite.icns\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/AppIcon.icns\"
+";
+		};
+		"E8E3D0A9E24D4DFD834B68CC" = {
+			"isa" = "PBXContainerItemProxy";
+			"containerPortal" = "244210E48437B6556980A702";
+			"proxyType" = "1";
+			"remoteGlobalIDString" = "C4CC2493604B13F9FCFC73FE";
+			"remoteInfo" = "DiskFerryCore";
+		};
+		"CAC5183A76DBAECBF97660EF" = {
+			"isa" = "PBXTargetDependency";
+			"target" = "C4CC2493604B13F9FCFC73FE";
+			"targetProxy" = "E8E3D0A9E24D4DFD834B68CC";
+		};
+		"54F6908BEFA0C07D3E9A3FB0" = {
+			"isa" = "PBXContainerItemProxy";
+			"containerPortal" = "244210E48437B6556980A702";
+			"proxyType" = "1";
+			"remoteGlobalIDString" = "C08D743E086FDC2F47462338";
+			"remoteInfo" = "DiskFerryNTFS";
+		};
+		"3867DD4E11B667D506FE21D4" = {
+			"isa" = "PBXTargetDependency";
+			"target" = "C08D743E086FDC2F47462338";
+			"targetProxy" = "54F6908BEFA0C07D3E9A3FB0";
+		};
+		"FDD3EA28A0B1309668A442B2" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf";
+			};
+		};
+		"8DB23D5B0AA80A48AA651830" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+			};
+		};
+		"1922B098E983995960BE56B0" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = (
+				"FDD3EA28A0B1309668A442B2",
+				"8DB23D5B0AA80A48AA651830",
+			);
+			"defaultConfigurationIsVisible" = "0";
+			"defaultConfigurationName" = "Release";
+		};
+		"244210E48437B6556980A702" = {
+			"isa" = "PBXProject";
+			"attributes" = {
+				"BuildIndependentTargetsInParallel" = "YES";
+				"LastUpgradeCheck" = "2650";
+			};
+			"buildConfigurationList" = "1922B098E983995960BE56B0";
+			"compatibilityVersion" = "Xcode 14.0";
+			"developmentRegion" = "zh_CN";
+			"hasScannedForEncodings" = "0";
+			"knownRegions" = (
+				"zh_CN",
+				"en",
+				"Base",
+			);
+			"mainGroup" = "19F479106CE8C3BA8C106518";
+			"productRefGroup" = "0A3E27B8CA818264D75C8D81";
+			"projectDirPath" = "";
+			"projectRoot" = "";
+			"targets" = (
+				"8C1A045E96B998B40533C7FF",
+				"C4CC2493604B13F9FCFC73FE",
+				"C08D743E086FDC2F47462338",
+			);
+		};
+	};
+	"rootObject" = "244210E48437B6556980A702";
+}
