@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
 #include <ntfs-3g/types.h>
 #include <ntfs-3g/layout.h>
@@ -40,6 +41,16 @@ struct nk_volume {
     struct nk_devctx *devctx;
     int marked_dirty;    /* this session owns the on-disk dirty flag */
 };
+
+static pthread_once_t name_policy_once = PTHREAD_ONCE_INIT;
+static void configure_name_policy(void) {
+#if defined(__APPLE__) || defined(__DARWIN__)
+    /* FSKit uses exact UTF-8 names. The engine's legacy macFUSE conversion
+     * silently composes input and decomposes output, aliasing distinct NTFS
+     * entries and producing names that cannot round-trip without changes. */
+    ntfs_macosx_normalize_filenames(0);
+#endif
+}
 
 static int require_writable(nk_volume *v) {
     if (!v || !v->vol) { errno = EINVAL; return -1; }
@@ -131,6 +142,107 @@ static ntfs_inode *open_public_inode(nk_volume *v, const char *path, int allow_r
         return NULL;
     }
     return ni;
+}
+
+/* Resolve one component using the volume's on-disk $UpCase table. Keep the
+ * engine itself case-sensitive: every subsequent path operation must use the
+ * returned spelling, including when POSIX-created case variants coexist. */
+struct child_match {
+    const ntfschar *query;
+    int query_len;
+    ntfs_volume *vol;
+    ntfschar name[255];
+    int name_len;
+    MFT_REF ref;
+    int exact_count;
+    int folded_count;
+};
+
+static int match_child(void *context, const ntfschar *name, int length,
+                       int name_type, s64 pos, MFT_REF ref, unsigned type) {
+    (void)pos; (void)type;
+    struct child_match *match = context;
+    if (name_type == FILE_NAME_DOS || length < 1 || length > 255) return 0;
+    int exact = ntfs_names_are_equal(name, length, match->query, match->query_len,
+                                     CASE_SENSITIVE, match->vol->upcase, match->vol->upcase_len);
+    int folded = exact || ntfs_names_are_equal(name, length, match->query, match->query_len,
+                                               IGNORE_CASE, match->vol->upcase, match->vol->upcase_len);
+    if (exact) match->exact_count++;
+    if (folded) match->folded_count++;
+    if (exact || (folded && match->exact_count == 0 && match->folded_count == 1)) {
+        memcpy(match->name, name, (size_t)length * sizeof(*name));
+        match->name_len = length;
+        match->ref = ref;
+    }
+    return 0;
+}
+
+static int find_child(ntfs_inode *dir, const ntfschar *query, int length,
+                       struct child_match *match) {
+    if (!(dir->mrec->flags & MFT_RECORD_IS_DIRECTORY)) { errno = ENOTDIR; return -1; }
+    memset(match, 0, sizeof(*match));
+    match->query = query;
+    match->query_len = length;
+    match->vol = dir->vol;
+    s64 position = 0;
+    if (ntfs_readdir(dir, &position, match, match_child)) return -1;
+    if (match->exact_count > 1 || (!match->exact_count && match->folded_count > 1)) {
+        /* Never guess when an imported POSIX namespace has two folded matches. */
+        errno = EIO;
+        return -1;
+    }
+    if (!match->name_len) { errno = ENOENT; return -1; }
+    return 0;
+}
+
+static int component_to_ucs(const char *name, ntfschar **ucs) {
+    if (!name || !*name || !strcmp(name, ".") || !strcmp(name, "..") || strchr(name, '/')) {
+        errno = EINVAL;
+        return -1;
+    }
+    int length = ntfs_mbstoucs(name, ucs);
+    if (length <= 0 || !*ucs) { errno = EINVAL; return -1; }
+    if (length > 255) { errno = ENAMETOOLONG; return -1; }
+    return length;
+}
+
+static int require_absent_child(ntfs_inode *dir, const ntfschar *name, int length) {
+    struct child_match match;
+    if (!find_child(dir, name, length, &match)) { errno = EEXIST; return -1; }
+    return errno == ENOENT ? 0 : -1;
+}
+
+int nk_lookup_child(nk_volume *v, const char *directory, const char *name,
+                     char *actual, size_t capacity, nk_stat *st) {
+    if (!v || !actual || !capacity || !st) { errno = EINVAL; return -1; }
+    ntfschar *ucs = NULL;
+    int length = component_to_ucs(name, &ucs);
+    if (length < 0) { free(ucs); return -1; }
+    ntfs_inode *dir = open_public_inode(v, directory, 1);
+    if (!dir) { free(ucs); return -1; }
+    struct child_match match;
+    int result = find_child(dir, ucs, length, &match);
+    int error = result ? errno : 0;
+    if (ntfs_inode_close(dir) && !error) error = EIO;
+    free(ucs);
+    if (v->devctx->failed) error = EIO;
+    if (error) { errno = error; return -1; }
+    char *utf8 = NULL;
+    int bytes = ntfs_ucstombs(match.name, match.name_len, &utf8, 0);
+    if (bytes < 0 || !utf8) { free(utf8); return -1; }
+    if ((size_t)bytes >= capacity) { free(utf8); errno = ERANGE; return -1; }
+    char *path = malloc(strlen(directory) + (size_t)bytes + 2);
+    if (!path) { free(utf8); return -1; }
+    snprintf(path, strlen(directory) + (size_t)bytes + 2, "%s%s%s",
+             directory, !strcmp(directory, "/") ? "" : "/", utf8);
+    result = nk_stat_path(v, path, st);
+    error = result ? errno : 0;
+    if (v->devctx->failed) { result = -1; error = EIO; }
+    if (!result) memcpy(actual, utf8, (size_t)bytes + 1);
+    free(path);
+    free(utf8);
+    if (error) errno = error;
+    return result;
 }
 
 /* ---- callback-backed ntfs_device ---- */
@@ -330,6 +442,7 @@ nk_volume *nk_mount_io(const nk_io *io, char *errbuf, size_t errlen) {
         if (errbuf && errlen) snprintf(errbuf, errlen, "invalid or incomplete block IO callbacks");
         return NULL;
     }
+    pthread_once(&name_policy_once, configure_name_policy);
     if (io->readonly) return open_engine_io(io, NTFS_MNT_RDONLY, 0, errbuf, errlen);
 
     nk_io ro = *io;
@@ -412,15 +525,20 @@ static void fill_stat(ntfs_inode *ni, ntfs_attr *na, nk_stat *st) {
 }
 
 int nk_stat_path(nk_volume *v, const char *path, nk_stat *st) {
-    if (!v || !st) return -1;
+    if (!v || !st) { errno = EINVAL; return -1; }
     ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) return -1;
     ntfs_attr *na = NULL;
-    if (!(ni->mrec->flags & MFT_RECORD_IS_DIRECTORY))
+    int error = 0;
+    if (!(ni->mrec->flags & MFT_RECORD_IS_DIRECTORY)) {
         na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
-    fill_stat(ni, na, st);
+        if (!na) error = errno ? errno : EIO;
+    }
+    if (!error) fill_stat(ni, na, st);
     if (na) ntfs_attr_close(na);
-    ntfs_inode_close(ni);
+    if (ntfs_inode_close(ni) && !error) error = EIO;
+    if (v->devctx->failed) error = EIO;
+    if (error) { errno = error; return -1; }
     return 0;
 }
 
@@ -475,7 +593,10 @@ int nk_list(nk_volume *v, const char *dir_path, nk_dirent_cb cb, void *ctx) {
     struct list_ctx lc = { v, cb, ctx, 0 };
     s64 pos = 0;
     int r = ntfs_readdir(dir, &pos, &lc, nk_filldir);
-    ntfs_inode_close(dir);
+    int error = r ? errno : 0;
+    if (ntfs_inode_close(dir) && !error) error = EIO;
+    if (v->devctx->failed) error = EIO;
+    if (error) { errno = error; return -1; }
     return r ? -1 : 0;
 }
 
@@ -519,9 +640,20 @@ static int create_node(nk_volume *v, const char *dir_path, const char *name,
     ntfs_inode *dir = open_public_inode(v, dir_path, 1);
     if (!dir) return -1;
     ntfschar *ucs = NULL;
-    int len = ntfs_mbstoucs(name, &ucs);
+    int len = component_to_ucs(name, &ucs);
     /* NTFS names are at most 255 UCS-2 units; (u8) casts must never wrap. */
-    if (len <= 0 || len > 255 || !ucs) { free(ucs); ntfs_inode_close(dir); return -1; }
+    if (len <= 0 || len > 255 || !ucs) {
+        int error = errno;
+        free(ucs); ntfs_inode_close(dir);
+        errno = error;
+        return mutation_status(v, -1);
+    }
+    if (require_absent_child(dir, ucs, len)) {
+        int error = errno;
+        free(ucs); ntfs_inode_close(dir);
+        errno = error;
+        return mutation_status(v, -1);
+    }
     ntfs_inode *ni = ntfs_create(dir, const_cpu_to_le32(0), ucs, (u8)len, type);
     free(ucs);
     int r = ni ? 0 : -1;
@@ -566,7 +698,10 @@ int nk_delete(nk_volume *v, const char *path) {
     ntfschar *ucs = NULL;
     int len = ntfs_mbstoucs(leaf, &ucs);
     if (len <= 0 || len > 255 || !ucs) {
-        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni); return -1;
+        int error = errno;
+        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni);
+        errno = error;
+        return mutation_status(v, -1);
     }
 
     /* ntfs_delete consumes (closes) both inodes, success or failure. */
@@ -588,15 +723,47 @@ int nk_rename(nk_volume *v, const char *old_path, const char *new_dir,
     if (!dir) { ntfs_inode_close(ni); return -1; }
 
     ntfschar *ucs = NULL;
-    int len = ntfs_mbstoucs(new_name, &ucs);
+    int len = component_to_ucs(new_name, &ucs);
     if (len <= 0 || len > 255 || !ucs) {
-        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni); return -1;
+        int error = errno;
+        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni);
+        errno = error;
+        return mutation_status(v, -1);
     }
 
-    /* POSIX (and ntfs-3g's FUSE rename): renaming onto another name of the
-     * same inode is a no-op. */
-    u64 ex = ntfs_inode_lookup_by_name(dir, ucs, len);
-    if (ex != (u64)-1 && MREF(ex) == ni->mft_no) {
+    struct child_match match;
+    int found = find_child(dir, ucs, len, &match) == 0;
+    int lookup_error = found ? 0 : errno;
+    if ((!found && lookup_error != ENOENT) || (found && match.ref != nk_mref(ni))) {
+        int error = found ? EEXIST : lookup_error;
+        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni);
+        errno = error;
+        return mutation_status(v, -1);
+    }
+    /* Exact same-inode targets are no-ops. A folded match to the source's
+     * own name must proceed to link/delete so the requested case is stored. */
+    int recase = 0;
+    if (found && !match.exact_count) {
+        char *parent = malloc(strlen(old_path) + 2);
+        const char *leaf = parent ? split_path(old_path, parent, strlen(old_path) + 2) : NULL;
+        ntfschar *old_name = NULL;
+        int old_len = leaf ? ntfs_mbstoucs(leaf, &old_name) : -1;
+        ntfs_inode *old_dir = old_len > 0 ? open_public_inode(v, parent, 1) : NULL;
+        if (old_dir) {
+            recase = nk_mref(old_dir) == nk_mref(dir) &&
+                ntfs_names_are_equal(old_name, old_len, match.name, match.name_len,
+                                     CASE_SENSITIVE, v->vol->upcase, v->vol->upcase_len);
+        }
+        int error = old_dir ? 0 : (errno ? errno : EIO);
+        if (old_dir && ntfs_inode_close(old_dir)) error = EIO;
+        free(old_name); free(parent);
+        if (error) {
+            free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni);
+            errno = error;
+            return mutation_status(v, -1);
+        }
+    }
+    if (found && !recase) {
         free(ucs);
         int failed = ntfs_inode_close(dir) ? -1 : 0;
         if (ntfs_inode_close(ni)) failed = -1;
@@ -721,17 +888,19 @@ int nk_create_symlink(nk_volume *v, const char *dir_path, const char *name,
     ntfs_inode *dir = open_public_inode(v, dir_path, 1);
     if (!dir) return -1;
     ntfschar *uname = NULL, *utarget = NULL;
-    int nlen = ntfs_mbstoucs(name, &uname);
-    int tlen = ntfs_mbstoucs(target, &utarget);
+    int nlen = component_to_ucs(name, &uname);
+    int tlen = nlen > 0 && target ? ntfs_mbstoucs(target, &utarget) : -1;
     int r = -1;
-    if (nlen > 0 && nlen <= 255 && tlen > 0) {
+    if (nlen > 0 && nlen <= 255 && tlen > 0 && !require_absent_child(dir, uname, nlen)) {
         ntfs_inode *ni = ntfs_create_symlink(dir, const_cpu_to_le32(0),
                                              uname, (u8)nlen, utarget, tlen);
         if (ni) { r = ntfs_inode_close(ni) ? -1 : 0; }
     }
+    int error = r ? (errno ? errno : EINVAL) : 0;
     free(uname);
     free(utarget);
-    if (ntfs_inode_close(dir)) r = -1;
+    if (ntfs_inode_close(dir)) { if (!error) error = EIO; r = -1; }
+    if (error) errno = error;
     return mutation_status(v, r);
 }
 

@@ -15,16 +15,16 @@ TASK_FRAMEWORKS="$(xcrun --sdk macosx --show-sdk-platform-path)/Developer/Librar
 TASK_TEST_LIB="$(xcrun --sdk macosx --show-sdk-platform-path)/Developer/usr/lib"
 TASK_TEST_PRIVATE_FRAMEWORKS="${TASK_FRAMEWORKS%/Frameworks}/PrivateFrameworks"
 mkdir -p "$TASK_OUTPUT"
-TASK_C_SANITIZER=()
-TASK_SWIFT_SANITIZER=()
+TASK_C_FLAGS=(-c -O1 -g)
+TASK_SWIFT_FLAGS=(-swift-version 5 -warnings-as-errors)
 if [[ "${DISKFERRY_TEST_TSAN:-0}" == 1 ]]; then
-    TASK_C_SANITIZER=(-fsanitize=thread)
-    TASK_SWIFT_SANITIZER=(-sanitize=thread)
+    TASK_C_FLAGS+=(-fsanitize=thread)
+    TASK_SWIFT_FLAGS+=(-sanitize=thread)
 fi
-xcrun clang "${TASK_C_SANITIZER[@]}" -c -O1 -g -DHAVE_CONFIG_H=1 -include "$TASK_ENGINE/config.h" \
+xcrun clang "${TASK_C_FLAGS[@]}" -DHAVE_CONFIG_H=1 -include "$TASK_ENGINE/config.h" \
     -I "$TASK_ENGINE" -I "$TASK_ENGINE/include" -I "$TASK_ENGINE/include/ntfs-3g" \
     "$TASK_ROOT/Extensions/DiskFerryNTFS/bridge/ntfs_bridge.c" -o "$TASK_OUTPUT/ntfs_bridge.o"
-xcrun swiftc "${TASK_SWIFT_SANITIZER[@]}" -swift-version 5 -warnings-as-errors -target "$(uname -m)-apple-macos26.4" \
+xcrun swiftc "${TASK_SWIFT_FLAGS[@]}" -target "$(uname -m)-apple-macos26.4" \
     -import-objc-header "$TASK_ROOT/Extensions/DiskFerryNTFS/Bridging-Header.h" \
     -F "$TASK_FRAMEWORKS" -Xlinker -rpath -Xlinker "$TASK_FRAMEWORKS" \
     -I "$TASK_TEST_LIB" -L "$TASK_TEST_LIB" -Xlinker -rpath -Xlinker "$TASK_TEST_LIB" \

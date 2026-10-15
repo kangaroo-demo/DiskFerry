@@ -7,6 +7,14 @@ import FSKit
 /// Resource-independent operations shared by the real FSKit adapter and image
 /// tests. The caller must serialize access to the engine and its namespace.
 enum NTFSFileOperations {
+    static func validateName(_ name: String) throws {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.utf8.contains(0) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL))
+        }
+        guard name.utf16.count <= 255 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENAMETOOLONG))
+        }
+    }
     private static func checked(_ operation: () -> Int32) throws {
         errno = 0
         if operation() != 0 {
@@ -40,13 +48,9 @@ enum NTFSFileOperations {
         guard type == .file || type == .directory || type == .symlink else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTSUP))
         }
-        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"),
-              !name.utf8.contains(0),
-              type != .symlink || (symlinkTarget != nil && !symlinkTarget!.utf8.contains(0)) else {
+        try validateName(name)
+        guard type != .symlink || (symlinkTarget != nil && !symlinkTarget!.utf8.contains(0)) else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL))
-        }
-        guard name.utf16.count <= 255 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENAMETOOLONG))
         }
         let defaults = NTFSAttributePolicy.defaults(type: type, uid: getuid(), gid: getgid())
         let unchanged = try NTFSAttributePolicy.validate(attributes, current: defaults,

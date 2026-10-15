@@ -30,6 +30,13 @@ class IO(c.Structure):
                 ("size", c.c_longlong), ("readonly", c.c_int)]
 
 
+class FileStat(c.Structure):
+    _fields_ = [("is_dir", c.c_int), ("size", c.c_longlong), ("alloc_size", c.c_longlong),
+                ("inode", c.c_uint64), ("atime", c.c_longlong), ("mtime", c.c_longlong),
+                ("ctime", c.c_longlong), ("btime", c.c_longlong), ("is_symlink", c.c_int),
+                ("koio_ok", c.c_int), ("is_resident", c.c_int)]
+
+
 def build_bridge():
     BUILD.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -48,6 +55,7 @@ def load_bridge():
     signatures = {
         "nk_mount_io": (c.c_void_p, [c.POINTER(IO), c.c_char_p, c.c_size_t]),
         "nk_umount": (c.c_int, [c.c_void_p]),
+        "nk_lookup_child": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p, c.c_void_p, c.c_size_t, c.POINTER(FileStat)]),
         "nk_create": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p]),
         "nk_mkdir": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p]),
         "nk_create_symlink": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p, c.c_char_p]),
@@ -153,6 +161,75 @@ class BridgeTests(unittest.TestCase):
         count = self.lib.nk_read(self.volume, path, offset, size, data)
         self.assertGreaterEqual(count, 0)
         return data.raw[:count]
+
+    def test_long_name_lookup_and_case_collision_protection(self):
+        self.mount()
+        stored = "R\u00e9sum\u00e9.TXT".encode()
+        variant = "R\u00c9SUM\u00c9.txt".encode()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", stored), 0)
+        self.assertEqual(self.lib.nk_write(self.volume, b"/" + stored, 0, 4, b"KEEP"), 4)
+        actual, attributes = c.create_string_buffer(1024), FileStat()
+        self.assertEqual(self.lib.nk_lookup_child(self.volume, b"/", variant, actual, len(actual), c.byref(attributes)), 0)
+        self.assertEqual(actual.value, stored)
+        self.assertEqual(attributes.size, 4)
+        for operation in [lambda: self.lib.nk_create(self.volume, b"/", variant),
+                          lambda: self.lib.nk_mkdir(self.volume, b"/", variant),
+                          lambda: self.lib.nk_create_symlink(self.volume, b"/", variant, b"target")]:
+            self.assertEqual(operation(), -1)
+            self.assertEqual(c.get_errno(), errno.EEXIST)
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"other"), 0)
+        self.assertEqual(self.lib.nk_rename(self.volume, b"/other", b"/", variant), -1)
+        self.assertEqual(c.get_errno(), errno.EEXIST)
+        self.assertEqual(self.lib.nk_rename(self.volume, b"/" + stored, b"/", variant), 0)
+        self.assertEqual(self.unmount(), 0)
+        self.mount(readonly=True)
+        self.assertEqual(self.read(b"/" + variant, 16), b"KEEP")
+        self.assertEqual(self.lib.nk_lookup_child(self.volume, b"/", stored, actual, len(actual), c.byref(attributes)), 0)
+        self.assertEqual(actual.value, variant)
+        small = c.create_string_buffer(b"UNCHANGED")
+        before = small.raw
+        self.assertEqual(self.lib.nk_lookup_child(self.volume, b"/", stored, small, 2, c.byref(attributes)), -1)
+        self.assertEqual(c.get_errno(), errno.ERANGE)
+        self.assertEqual(small.raw, before)
+        self.assertEqual(self.lib.nk_lookup_child(self.volume, b"/", b"$mft", actual, len(actual), c.byref(attributes)), -1)
+        self.assertEqual(c.get_errno(), errno.EPERM)
+
+    def test_imported_case_variants_require_exact_or_unique_lookup(self):
+        source = Path(self.temporary.name) / "import.txt"
+        for name, value in [("Alpha", b"FIRST"), ("ALPHA", b"SECOND")]:
+            source.write_bytes(value)
+            subprocess.run([str(ENGINE / "ntfsprogs/ntfscp"), "-f", str(self.path), str(source), "/" + name],
+                           check=True, capture_output=True, timeout=30)
+        before = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.mount(readonly=True)
+        actual, attributes = c.create_string_buffer(1024), FileStat()
+        for name, value in [(b"Alpha", b"FIRST"), (b"ALPHA", b"SECOND")]:
+            self.assertEqual(self.lib.nk_lookup_child(self.volume, b"/", name, actual, len(actual), c.byref(attributes)), 0)
+            self.assertEqual(actual.value, name)
+            self.assertEqual(self.read(b"/" + name, 32), value)
+        self.assertEqual(self.lib.nk_lookup_child(self.volume, b"/", b"alpha", actual, len(actual), c.byref(attributes)), -1)
+        self.assertEqual(c.get_errno(), errno.EIO)
+        self.assertEqual(self.unmount(), 0)
+        self.assertEqual(self.device.writes, 0)
+        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
+
+    def test_component_validation_refuses_escape_without_mutation(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"original"), 0)
+        self.assertEqual(self.lib.nk_sync(self.volume), 0)
+        before = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        writes = self.device.writes
+        for name in [b"", b".", b"..", b"nested/escaped", b"a" * 256]:
+            expected = errno.ENAMETOOLONG if len(name) == 256 else errno.EINVAL
+            for operation in [lambda: self.lib.nk_create(self.volume, b"/", name),
+                              lambda: self.lib.nk_mkdir(self.volume, b"/", name),
+                              lambda: self.lib.nk_create_symlink(self.volume, b"/", name, b"target"),
+                              lambda: self.lib.nk_rename(self.volume, b"/original", b"/", name)]:
+                with self.subTest(name=name, operation=operation):
+                    self.assertEqual(operation(), -1)
+                    self.assertEqual(c.get_errno(), expected)
+        self.assertEqual(self.device.writes, writes)
+        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
 
     def test_unicode_random_write_truncate_rename_and_persistence(self):
         self.mount()

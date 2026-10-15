@@ -43,21 +43,21 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     /// unmount has no error channel; retain shutdown errors for deactivate.
     private var shutdownError: Int32 = 0       // engineQueue only
     private var nextID: UInt64 = 100
-    private var idByPath: [String: FSItem.Identifier] = ["/": .rootDirectory]
+    private var idByPath: NTFSPathMap<FSItem.Identifier> = ["/": .rootDirectory]
     /// Per-directory listing generation (keyed by directory path), bumped when
     /// THAT directory's entries change — a resumed readdir must not fail on
     /// unrelated writes elsewhere. Values come from one counter so a path
     /// never sees a reused generation; missing entries read as 1.
-    private var dirGen: [String: UInt64] = [:]
+    private var dirGen: NTFSPathMap<UInt64> = [:]
     private var genCounter: UInt64 = 1
     /// One live NTFSItem instance per path — FSKit tracks items by object
     /// identity; handing out fresh instances per lookup leaks phantom vnodes
     /// (files stay "open" forever and unlink is deferred indefinitely).
-    private var itemByPath: [String: NTFSItem] = [:]
+    private var itemByPath: NTFSPathMap<NTFSItem> = [:]
     /// Removed/replaced items retain a root-level private link until reclaim.
     /// Keeping these outside their former directory permits removing that
     /// directory while an unlinked child is still open.
-    private var pendingByPath: [String: NTFSItem] = [:]
+    private var pendingByPath: NTFSPathMap<NTFSItem> = [:]
     /// A failed compound rename can leave paths uncertain. Stop namespace
     /// access until a new volume instance performs read-only recovery.
     private var namespaceError: Int32 = 0
@@ -603,6 +603,22 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     // MARK: lookup / enumerate
 
+    private func resolvedChild(named name: String, in directory: NTFSItem) throws -> (path: String, name: String, stat: nk_stat) {
+        try NTFSFileOperations.validateName(name)
+        var actual = [CChar](repeating: 0, count: 1024)
+        var st = nk_stat()
+        let (rc, error) = engine {
+            directory.path.withCString { parent in
+                name.withCString { nk_lookup_child(vol, parent, $0, &actual, actual.count, &st) }
+            }
+        }
+        guard rc == 0 else { throw posix(errno: error, or: ENOENT) }
+        let storedName = String(cString: actual)
+        let path = directory.childPath(storedName)
+        if pendingByPath[path] != nil { throw posix(ENOENT) }
+        return (path, storedName, st)
+    }
+
     func lookupItem(named name: FSFileName, inDirectory directory: FSItem) async throws -> (FSItem, FSFileName) {
         guard let dir = directory as? NTFSItem, let childName = name.string else { throw posix(EINVAL) }
         // stat + item() under stateLock (lock order stateLock → engineQueue):
@@ -610,14 +626,11 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         // second NTFSItem for one file or one cached under a dead path.
         return try stateLock.withLock {
             try requireLive(dir, linked: true)
-            let childPath = dir.childPath(childName)
-            if pendingByPath[childPath] != nil { throw posix(ENOENT) }
-            var st = nk_stat()
-            let (rc, e) = engine { childPath.withCString { nk_stat_path(vol, $0, &st) } }
-            guard rc == 0 else { throw posix(errno: e, or: ENOENT) }
+            let resolved = try resolvedChild(named: childName, in: dir)
+            let st = resolved.stat
             let kind: FSItem.ItemType = st.is_symlink != 0 ? .symlink
                                       : st.is_dir != 0 ? .directory : .file
-            return (item(path: childPath, kind: kind), name)
+            return (item(path: resolved.path, kind: kind), FSFileName(string: resolved.name))
         }
     }
 
@@ -657,13 +670,13 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 // FSKit drops entries packed without attributes when it asked for
                 // them — fetch per entry (path-addressed engine, one stat each).
                 var entryAttrs: FSItem.Attributes? = nil
-                let entryID = entry.path == dir.path ? dir.identifier : id(for: entry.path)
+                let entryID = NTFSPath.equal(entry.path, dir.path) ? dir.identifier : id(for: entry.path)
                 if attributes != nil {
                     var st = nk_stat()
                     let (rc, error) = engine { entry.path.withCString { nk_stat_path(vol, $0, &st) } }
                     guard rc == 0 else { throw posix(errno: error) }
                     entryAttrs = makeAttributes(path: entry.path, st: st, identifier: entryID,
-                                                unlinked: entry.path == dir.path && dir.unlinked)
+                                                unlinked: NTFSPath.equal(entry.path, dir.path) && dir.unlinked)
                 }
                 // nk_dirent has no symlink flag; the per-entry stat (when asked
                 // for attributes) knows the real type.
@@ -722,7 +735,7 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             try requireLive(item, linked: true)
             try requireLive(directory, linked: true)
             let path = item.path
-            guard directory.childPath(name) == path else { throw posix(ENOENT) }
+            guard NTFSPath.equal(try resolvedChild(named: name, in: directory).path, path) else { throw posix(ENOENT) }
             guard path != "/" else { throw posix(EPERM) }
             try requireEmptyDirectory(item)
             let name = pendingName(for: path)
@@ -762,12 +775,13 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let oldPath = item.path
             let destPath = destDir.path
             let newPath = destDir.childPath(newName)
-            guard sourceDir.childPath(sourceLeaf) == oldPath else { throw posix(ENOENT) }
+            guard NTFSPath.equal(try resolvedChild(named: sourceLeaf, in: sourceDir).path, oldPath) else { throw posix(ENOENT) }
+            try NTFSFileOperations.validateName(newName)
             guard oldPath != "/" else { throw posix(EPERM) }
 
             // A directory must never move into itself or its own subtree — the
             // engine's link-then-delete would happily create a cycle.
-            if destPath == oldPath || destPath.hasPrefix(oldPath + "/") {
+            if NTFSPath.equal(destPath, oldPath) || NTFSPath.hasPrefix(destPath, oldPath + "/") {
                 throw posix(EINVAL)
             }
 
@@ -779,7 +793,7 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             var parked: String? = nil
             if let over {
                 try requireLive(over, linked: true)
-                guard overPath == newPath else { throw posix(ENOENT) }
+                guard NTFSPath.equal(try resolvedChild(named: newName, in: destDir).path, overPath) else { throw posix(ENOENT) }
                 if item.kind == .directory && over.kind != .directory { throw posix(ENOTDIR) }
                 if item.kind != .directory && over.kind == .directory { throw posix(EISDIR) }
                 // POSIX: renaming onto another link of the same file is a
@@ -855,10 +869,10 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                     let overPrefix = overPath + "/"
                     itemByPath[overPath] = nil
                     idByPath[overPath] = nil
-                    for p in itemByPath.keys where p.hasPrefix(overPrefix) {
+                    for p in itemByPath.keys where NTFSPath.hasPrefix(p, overPrefix) {
                         itemByPath[p] = nil
                     }
-                    for p in idByPath.keys where p.hasPrefix(overPrefix) {
+                    for p in idByPath.keys where NTFSPath.hasPrefix(p, overPrefix) {
                         idByPath[p] = nil
                     }
                 }
@@ -866,7 +880,7 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 itemByPath[oldPath] = nil
                 item.path = newPath
                 itemByPath[newPath] = item
-                for p in itemByPath.keys.filter({ $0.hasPrefix(oldPrefix) }) {
+                for p in itemByPath.keys.filter({ NTFSPath.hasPrefix($0, oldPrefix) }) {
                     let np = newPath + "/" + p.dropFirst(oldPrefix.count)
                     let child = itemByPath.removeValue(forKey: p)!
                     child.path = np
@@ -874,7 +888,7 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 }
                 let movedID = idByPath.removeValue(forKey: oldPath) ?? item.identifier
                 idByPath[newPath] = movedID
-                for p in idByPath.keys.filter({ $0.hasPrefix(oldPrefix) }) {
+                for p in idByPath.keys.filter({ NTFSPath.hasPrefix($0, oldPrefix) }) {
                     let np = newPath + "/" + p.dropFirst(oldPrefix.count)
                     idByPath[np] = idByPath.removeValue(forKey: p)
                 }

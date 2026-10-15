@@ -130,6 +130,89 @@ private final class AsyncTestResult: @unchecked Sendable {
         try result.check()
     }
 
+    func testCanonicallyEquivalentNamesRetainSeparateObjectsAndData() throws {
+        try runAsync {
+            let session = try VolumeImage()
+            let composed = "Caf\u{e9}"
+            let decomposed = "Cafe\u{301}"
+            let first = try await session.create(composed, type: .directory)
+            let second = try await session.create(decomposed, type: .directory)
+            XCTAssertFalse(first === second, "NTFS stores these UTF-16 names separately")
+            let firstChild = try await session.create("child", parent: first)
+            let secondChild = try await session.create("child", parent: second)
+            XCTAssertFalse(firstChild === secondChild)
+            _ = try await session.volume.write(contents: Data("FIRST".utf8), to: firstChild, at: 0)
+            _ = try await session.volume.write(contents: Data("SECOND".utf8), to: secondChild, at: 0)
+            try await session.rename(first, from: composed, to: "moved")
+            _ = try await session.volume.write(contents: Data("OTHER".utf8), to: secondChild, at: 0)
+            XCTAssertEqual(Data((secondChild as! NTFSItem).path.utf8), Data(("/" + decomposed + "/child").utf8))
+            XCTAssertEqual(session.volume.finishVolume(), 0)
+            XCTAssertEqual(try session.contentsAfterClose("/moved/child"), Data("FIRST".utf8))
+            XCTAssertEqual(try session.contentsAfterClose("/" + decomposed + "/child"), Data("OTHERD".utf8))
+        }
+    }
+
+    func testCaseLookupReturnsActualSpellingAndOneCachedObject() throws {
+        try runAsync {
+            let session = try VolumeImage()
+            let original = try await session.create("R\u{e9}sum\u{e9}.TXT")
+            let (found, name) = try await session.volume.lookupItem(named: FSFileName(string: "R\u{c9}SUM\u{c9}.txt"),
+                                                                    inDirectory: session.root)
+            XCTAssertTrue(found === original)
+            XCTAssertEqual(Data((name.string ?? "").utf8), Data("R\u{e9}sum\u{e9}.TXT".utf8))
+            await self.expectError(EEXIST) { _ = try await session.create("r\u{e9}sum\u{e9}.txt") }
+            try await session.volume.removeItem(found, named: FSFileName(string: "R\u{c9}SUM\u{c9}.txt"),
+                                                 fromDirectory: session.root)
+            let privateName = ((original as! NTFSItem).path as NSString).lastPathComponent.uppercased()
+            await self.expectError(ENOENT) {
+                _ = try await session.volume.lookupItem(named: FSFileName(string: privateName), inDirectory: session.root)
+            }
+            XCTAssertEqual(session.volume.finishVolume(), 0)
+        }
+    }
+
+    func testCaseOnlyRenamePreservesFileAndCachedChildren() throws {
+        try runAsync {
+            let session = try VolumeImage()
+            let directory = try await session.create("D\u{e9}tails", type: .directory)
+            let child = try await session.create("Mixed.txt", parent: directory)
+            _ = try await session.volume.write(contents: Data("CONTENTS".utf8), to: child, at: 0)
+            _ = try await session.volume.renameItem(directory, inDirectory: session.root,
+                named: FSFileName(string: "D\u{c9}TAILS"), to: FSFileName(string: "D\u{c9}TAILS"),
+                inDirectory: session.root, overItem: directory)
+            _ = try await session.volume.renameItem(child, inDirectory: directory,
+                named: FSFileName(string: "mixed.TXT"), to: FSFileName(string: "MIXED.TXT"),
+                inDirectory: directory, overItem: child)
+            let (found, name) = try await session.volume.lookupItem(named: FSFileName(string: "mixed.txt"), inDirectory: directory)
+            XCTAssertTrue(found === child)
+            XCTAssertEqual(name.string, "MIXED.TXT")
+            XCTAssertEqual(session.volume.finishVolume(), 0)
+            XCTAssertEqual(try session.contentsAfterClose("/D\u{c9}TAILS/MIXED.TXT"), Data("CONTENTS".utf8))
+            XCTAssertThrowsError(try session.image.stat("/D\u{e9}tails/Mixed.txt"))
+        }
+    }
+
+    func testRenameOverUsingDifferentCaseKeepsVictimAndSuccessorSeparate() throws {
+        try runAsync {
+            let session = try VolumeImage()
+            let source = try await session.create("Source")
+            let victim = try await session.create("Target")
+            _ = try await session.volume.write(contents: Data("SOURCE".utf8), to: source, at: 0)
+            _ = try await session.volume.write(contents: Data("VICTIM".utf8), to: victim, at: 0)
+            try await session.rename(source, from: "SOURCE", to: "TARGET", over: victim)
+            let (found, name) = try await session.volume.lookupItem(named: FSFileName(string: "target"), inDirectory: session.root)
+            XCTAssertTrue(found === source)
+            XCTAssertEqual(name.string, "TARGET")
+            _ = try await session.volume.write(contents: Data("OLD CHANGED".utf8), to: victim, at: 0)
+            await self.expectError(EEXIST) { _ = try await session.create("Target") }
+            try await session.volume.reclaimItem(victim)
+            let (after, _) = try await session.volume.lookupItem(named: FSFileName(string: "Target"), inDirectory: session.root)
+            XCTAssertTrue(after === source)
+            XCTAssertEqual(session.volume.finishVolume(), 0)
+            XCTAssertEqual(try session.contentsAfterClose("/TARGET"), Data("SOURCE".utf8))
+        }
+    }
+
     func testRemovedOpenItemCannotAliasARecreatedPath() throws {
         try runAsync {
             let image = try ImageSession()

@@ -86,6 +86,12 @@ int nk_label(nk_volume *v, char *buf, size_t buflen);
  * operations, but cannot itself be renamed, removed or written as file data. */
 int nk_stat_path(nk_volume *v, const char *path, nk_stat *st);
 int nk_list(nk_volume *v, const char *dir_path, nk_dirent_cb cb, void *ctx);
+/* Resolve a long-name component with exact spelling first, then $UpCase
+ * matching. Return the actual stored UTF-8 spelling (NUL included in capacity)
+ * and attributes. Ambiguous folded matches fail EIO; DOS aliases are omitted.
+ * All other path operations use exact stored names, without normalization. */
+int nk_lookup_child(nk_volume *v, const char *directory, const char *name,
+                     char *actual, size_t capacity, nk_stat *st);
 
 long long nk_read(nk_volume *v, const char *path, long long offset,
                   long long count, void *buf);
