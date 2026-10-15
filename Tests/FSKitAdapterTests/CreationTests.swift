@@ -137,6 +137,7 @@ private final class ImageSession {
         let image = try ImageSession()
         let request = FSItem.SetAttributesRequest()
         request.mode = 0o755
+        request.size = UInt64.max
         request.birthTime = timespec(tv_sec: 123456, tv_nsec: 0)
         try image.create("directory", type: .directory, request: request)
         XCTAssertEqual(request.consumedAttributes, [.mode, .birthTime])
@@ -150,6 +151,7 @@ private final class ImageSession {
     func testSymlinkCreationAppliesTimesWithoutChangingTarget() throws {
         let image = try ImageSession()
         let request = FSItem.SetAttributesRequest()
+        request.size = UInt64.max
         request.modifyTime = timespec(tv_sec: 123456, tv_nsec: 0)
         try image.create("link", type: .symlink, request: request, target: "/目录/target")
         XCTAssertEqual(request.consumedAttributes, [.modifyTime])

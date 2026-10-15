@@ -49,8 +49,9 @@ enum NTFSAttributePolicy {
             guard request.flags == current.flags else { try reject(ENOTSUP) }
             unchanged.insert(.flags)
         }
-        if request.isValid(.size) {
-            guard current.type == .file else { try reject(EINVAL) }
+        // FSKit explicitly requires ignoring size on directories and links.
+        // Do not validate/convert that inapplicable value or consume it.
+        if request.isValid(.size), current.type == .file {
             guard request.size <= UInt64(Int64.max) else { try reject(EFBIG) }
         }
         let times: [(FSItem.Attribute, timespec)] = [(.accessTime, request.accessTime),

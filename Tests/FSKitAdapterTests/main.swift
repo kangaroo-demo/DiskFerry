@@ -51,12 +51,15 @@ import XCTest
         expectError(EFBIG) { _ = try NTFSAttributePolicy.validate(request, current: current(), readOnly: false) }
     }
 
-    func testDirectoryCannotBeTruncated() {
-        let attrs = current()
-        attrs.type = .directory
-        let request = FSItem.SetAttributesRequest()
-        request.size = 0
-        expectError(EINVAL) { _ = try NTFSAttributePolicy.validate(request, current: attrs, readOnly: false) }
+    func testNonFileSizeRequestsAreIgnoredWithoutSignedConversion() throws {
+        for type: FSItem.ItemType in [.directory, .symlink] {
+            let attrs = current()
+            attrs.type = type
+            let request = FSItem.SetAttributesRequest()
+            request.size = UInt64.max
+            XCTAssertEqual(try NTFSAttributePolicy.validate(request, current: attrs, readOnly: false), [])
+            XCTAssertEqual(request.consumedAttributes, [])
+        }
     }
 
     func testUnsupportedDatesAreRejected() {

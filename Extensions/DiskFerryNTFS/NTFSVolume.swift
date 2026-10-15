@@ -490,7 +490,7 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let current = makeAttributes(path: path, st: st, identifier: item.identifier)
             let unchanged = try NTFSAttributePolicy.validate(request, current: current, readOnly: readOnly)
             try engineQueue.sync {
-                try NTFSFileOperations.apply(request, to: path, volume: vol, unchanged: unchanged)
+                try NTFSFileOperations.apply(request, to: path, type: current.type, volume: vol, unchanged: unchanged)
                 errno = 0
                 guard path.withCString({ nk_stat_path(vol, $0, &st) }) == 0 else {
                     throw posix(errno: errno)

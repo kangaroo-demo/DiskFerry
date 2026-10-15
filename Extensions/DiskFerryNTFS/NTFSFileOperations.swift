@@ -16,8 +16,8 @@ enum NTFSFileOperations {
 
     /// The complete request must pass NTFSAttributePolicy before this call.
     static func apply(_ request: FSItem.SetAttributesRequest, to path: String,
-                      volume: OpaquePointer?, unchanged: FSItem.Attribute) throws {
-        if request.isValid(.size) {
+                      type: FSItem.ItemType, volume: OpaquePointer?, unchanged: FSItem.Attribute) throws {
+        if request.isValid(.size), type == .file {
             try checked { path.withCString { nk_truncate(volume, $0, Int64(request.size)) } }
             request.consumedAttributes.insert(.size)
         }
@@ -65,7 +65,7 @@ enum NTFSFileOperations {
             }
         }
         do {
-            try apply(attributes, to: path, volume: volume, unchanged: unchanged)
+            try apply(attributes, to: path, type: type, volume: volume, unchanged: unchanged)
         } catch {
             // Only remove an item whose create returned success. In particular,
             // EEXIST above must never delete somebody else's existing file.
