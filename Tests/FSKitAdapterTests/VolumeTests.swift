@@ -130,6 +130,122 @@ private final class AsyncTestResult: @unchecked Sendable {
         try result.check()
     }
 
+    func testSubsecondCreationAndSetTimesPersistAtNTFSPrecision() throws {
+        try runAsync {
+            let session = try VolumeImage()
+            let request = FSItem.SetAttributesRequest()
+            request.accessTime = timespec(tv_sec: 1_500_000_001, tv_nsec: 123_456_789)
+            request.modifyTime = timespec(tv_sec: 1_500_000_002, tv_nsec: 987_654_321)
+            request.birthTime = timespec(tv_sec: 1_500_000_003, tv_nsec: 1_234_599)
+            let (file, _) = try await session.volume.createItem(named: FSFileName(string: "precise"), type: .file,
+                inDirectory: session.root, attributes: request)
+            var attributes = try await session.volume.attributes(FSItem.GetAttributesRequest(), of: file)
+            XCTAssertEqual(attributes.accessTime.tv_nsec, 123_456_700)
+            XCTAssertEqual(attributes.modifyTime.tv_nsec, 987_654_300)
+            XCTAssertEqual(attributes.birthTime.tv_nsec, 1_234_500)
+            let update = FSItem.SetAttributesRequest()
+            update.modifyTime = timespec(tv_sec: 1_600_000_001, tv_nsec: 999_999_999)
+            attributes = try await session.volume.setAttributes(update, on: file)
+            XCTAssertEqual(attributes.modifyTime.tv_sec, 1_600_000_001)
+            XCTAssertEqual(attributes.modifyTime.tv_nsec, 999_999_900)
+            XCTAssertEqual(attributes.accessTime.tv_nsec, 123_456_700)
+            XCTAssertEqual(attributes.birthTime.tv_nsec, 1_234_500)
+            XCTAssertEqual(update.consumedAttributes, [.modifyTime])
+            XCTAssertEqual(session.volume.finishVolume(), 0)
+            let reopened = NTFSVolume(resource: session.transport, volumeName: FSFileName(string: "TEST"),
+                                      volumeID: .init(uuid: UUID()), readOnly: true)
+            defer { reopened.finishVolume() }
+            let root = try reopened.activateVolume()
+            let (found, _) = try await reopened.lookupItem(named: FSFileName(string: "precise"), inDirectory: root)
+            attributes = try await reopened.attributes(FSItem.GetAttributesRequest(), of: found)
+            XCTAssertEqual(attributes.modifyTime.tv_sec, 1_600_000_001)
+            XCTAssertEqual(attributes.modifyTime.tv_nsec, 999_999_900)
+            XCTAssertEqual(attributes.accessTime.tv_nsec, 123_456_700)
+            XCTAssertEqual(attributes.birthTime.tv_nsec, 1_234_500)
+        }
+    }
+
+    func testPreUnixEpochTimesAndNTFSEpochArePreserved() throws {
+        try runAsync {
+            let session = try VolumeImage()
+            let request = FSItem.SetAttributesRequest()
+            request.accessTime = timespec(tv_sec: -1, tv_nsec: 123_456_789)
+            request.modifyTime = timespec(tv_sec: -123_456_789, tv_nsec: 987_654_321)
+            request.birthTime = timespec(tv_sec: -11_644_473_600, tv_nsec: 0)
+            let (file, _) = try await session.volume.createItem(named: FSFileName(string: "old"), type: .file,
+                inDirectory: session.root, attributes: request)
+            let attributes = try await session.volume.attributes(FSItem.GetAttributesRequest(), of: file)
+            XCTAssertEqual(attributes.accessTime.tv_sec, -1)
+            XCTAssertEqual(attributes.accessTime.tv_nsec, 123_456_700)
+            XCTAssertEqual(attributes.modifyTime.tv_sec, -123_456_789)
+            XCTAssertEqual(attributes.modifyTime.tv_nsec, 987_654_300)
+            XCTAssertEqual(attributes.birthTime.tv_sec, -11_644_473_600)
+            XCTAssertEqual(attributes.birthTime.tv_nsec, 0)
+            XCTAssertEqual(request.consumedAttributes, [.accessTime, .modifyTime, .birthTime])
+            XCTAssertEqual(session.volume.finishVolume(), 0)
+            try session.image.mount(readOnly: true)
+            let stored = try session.image.stat("/old")
+            XCTAssertEqual(stored.atime, -1)
+            XCTAssertEqual(stored.atime_nsec, 123_456_700)
+            XCTAssertEqual(stored.mtime, -123_456_789)
+            XCTAssertEqual(stored.mtime_nsec, 987_654_300)
+            XCTAssertEqual(stored.btime, -11_644_473_600)
+        }
+    }
+
+    func testInvalidTimeRejectsWholeSetBeforeTruncateOrTimeMutation() throws {
+        try runAsync {
+            let session = try VolumeImage()
+            let file = try await session.create("keep")
+            _ = try await session.volume.write(contents: Data("KEEP".utf8), to: file, at: 0)
+            let before = try await session.volume.attributes(FSItem.GetAttributesRequest(), of: file)
+            let writes = session.transport.writeCount
+            for date in [timespec(tv_sec: -11_644_473_601, tv_nsec: 0),
+                         timespec(tv_sec: 910_692_730_085, tv_nsec: 477_580_800),
+                         timespec(tv_sec: 0, tv_nsec: Int.max)] {
+                let request = FSItem.SetAttributesRequest()
+                request.size = 0
+                request.accessTime = timespec(tv_sec: 123, tv_nsec: 456)
+                request.modifyTime = date
+                await self.expectError(EINVAL) { _ = try await session.volume.setAttributes(request, on: file) }
+                XCTAssertEqual(request.consumedAttributes, [])
+            }
+            let after = try await session.volume.attributes(FSItem.GetAttributesRequest(), of: file)
+            XCTAssertEqual(after.size, 4)
+            XCTAssertEqual(after.accessTime.tv_sec, before.accessTime.tv_sec)
+            XCTAssertEqual(after.accessTime.tv_nsec, before.accessTime.tv_nsec)
+            XCTAssertEqual(session.transport.writeCount, writes)
+            XCTAssertEqual(session.volume.finishVolume(), 0)
+            XCTAssertEqual(try session.contentsAfterClose("/keep"), Data("KEEP".utf8))
+        }
+    }
+
+    func testTimestampRangeEdgesRoundTripWithoutOverflow() throws {
+        try runAsync {
+            let session = try VolumeImage()
+            let dates = [timespec(tv_sec: -11_644_473_600, tv_nsec: 99),
+                         timespec(tv_sec: -1, tv_nsec: 999_999_999),
+                         timespec(tv_sec: 0, tv_nsec: 0),
+                         timespec(tv_sec: 910_692_730_085, tv_nsec: 477_580_799)]
+            for (index, date) in dates.enumerated() {
+                let request = FSItem.SetAttributesRequest()
+                request.modifyTime = date
+                let (file, _) = try await session.volume.createItem(named: FSFileName(string: "edge-\(index)"), type: .file,
+                    inDirectory: session.root, attributes: request)
+                let actual = try await session.volume.attributes(FSItem.GetAttributesRequest(), of: file)
+                XCTAssertEqual(actual.modifyTime.tv_sec, date.tv_sec)
+                XCTAssertEqual(actual.modifyTime.tv_nsec, date.tv_nsec / 100 * 100)
+            }
+            XCTAssertEqual(session.volume.finishVolume(), 0)
+            try session.image.mount(readOnly: true)
+            for (index, date) in dates.enumerated() {
+                let stored = try session.image.stat("/edge-\(index)")
+                XCTAssertEqual(stored.mtime, Int64(date.tv_sec))
+                XCTAssertEqual(stored.mtime_nsec, Int32(date.tv_nsec / 100 * 100))
+            }
+        }
+    }
+
     func testCanonicallyEquivalentNamesRetainSeparateObjectsAndData() throws {
         try runAsync {
             let session = try VolumeImage()

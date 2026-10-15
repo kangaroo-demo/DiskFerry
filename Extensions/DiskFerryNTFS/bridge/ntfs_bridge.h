@@ -40,7 +40,19 @@ typedef struct {
                               symlink, any BitLocker file, and on RO volumes a
                               file with initialized_size < data_size */
     int       is_resident; /* data lives in the MFT record (small/new file) */
+    int       atime_nsec, mtime_nsec, ctime_nsec, btime_nsec;
 } nk_stat;
+
+typedef struct {
+    long long seconds;   /* signed Unix seconds, including dates before 1970 */
+    int nanoseconds;     /* 0...999999999; NTFS truncates to 100 ns */
+} nk_timestamp;
+
+enum { NK_TIME_ACCESS = 1, NK_TIME_MODIFY = 2, NK_TIME_BIRTH = 4 };
+typedef struct {
+    unsigned int valid;  /* NK_TIME_* fields to change; others are ignored */
+    nk_timestamp access, modify, birth;
+} nk_times;
 
 /* Callback-backed block I/O — lets the FSKit host route every device access
  * through FSBlockDeviceResource (the sandbox forbids opening /dev directly).
@@ -109,6 +121,10 @@ int nk_sync(nk_volume *v);
 /* Set POSIX times (seconds since epoch); pass -1 to leave a field unchanged. */
 int nk_set_times(nk_volume *v, const char *path, long long atime,
                  long long mtime, long long btime);
+/* Full precision, explicit presence bits, and dates from the NTFS epoch
+ * through the signed engine tick range. Validate the whole request before
+ * changing an inode; out-of-range values return EINVAL without mutation. */
+int nk_set_times_precise(nk_volume *v, const char *path, const nk_times *times);
 
 /* Read a symlink target (UTF-8) into buf. Returns 0 / -1; -1 with
  * errno=ENAMETOOLONG if the target doesn't fit (never truncates). */

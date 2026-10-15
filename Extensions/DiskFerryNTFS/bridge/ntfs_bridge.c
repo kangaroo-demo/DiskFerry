@@ -505,7 +505,20 @@ static int is_intx_symlink(ntfs_attr *na) {
     return magic == INTX_SYMBOLIC_LINK;
 }
 
-static void fill_stat(ntfs_inode *ni, ntfs_attr *na, nk_stat *st) {
+static int export_time(ntfs_time value, long long *seconds, int *nanoseconds) {
+    s64 ticks = sle64_to_cpu(value);
+    if (ticks < 0) { errno = EOVERFLOW; return -1; }
+    s64 unix_ticks = ticks - NTFS_TIME_OFFSET;
+    *seconds = unix_ticks / 10000000;
+    s64 remainder = unix_ticks % 10000000;
+    /* C division truncates toward zero. POSIX timespec requires a floor
+     * second and nonnegative fraction even before the Unix epoch. */
+    if (remainder < 0) { (*seconds)--; remainder += 10000000; }
+    *nanoseconds = (int)(remainder * 100);
+    return 0;
+}
+
+static int fill_stat(ntfs_inode *ni, ntfs_attr *na, nk_stat *st) {
     memset(st, 0, sizeof(*st));
     st->is_dir = (ni->mrec->flags & MFT_RECORD_IS_DIRECTORY) ? 1 : 0;
     st->inode = (uint64_t)ni->mft_no;
@@ -518,10 +531,11 @@ static void fill_stat(ntfs_inode *ni, ntfs_attr *na, nk_stat *st) {
         st->is_resident = NAttrNonResident(na) ? 0 : 1;
         st->koio_ok = 0; /* kernel-offloaded IO is not exposed */
     }
-    st->atime = ntfs2timespec(ni->last_access_time).tv_sec;
-    st->mtime = ntfs2timespec(ni->last_data_change_time).tv_sec;
-    st->ctime = ntfs2timespec(ni->last_mft_change_time).tv_sec;
-    st->btime = ntfs2timespec(ni->creation_time).tv_sec;
+    if (export_time(ni->last_access_time, &st->atime, &st->atime_nsec) ||
+        export_time(ni->last_data_change_time, &st->mtime, &st->mtime_nsec) ||
+        export_time(ni->last_mft_change_time, &st->ctime, &st->ctime_nsec) ||
+        export_time(ni->creation_time, &st->btime, &st->btime_nsec)) return -1;
+    return 0;
 }
 
 int nk_stat_path(nk_volume *v, const char *path, nk_stat *st) {
@@ -534,7 +548,7 @@ int nk_stat_path(nk_volume *v, const char *path, nk_stat *st) {
         na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
         if (!na) error = errno ? errno : EIO;
     }
-    if (!error) fill_stat(ni, na, st);
+    if (!error && fill_stat(ni, na, st)) error = errno;
     if (na) ntfs_attr_close(na);
     if (ntfs_inode_close(ni) && !error) error = EIO;
     if (v->devctx->failed) error = EIO;
@@ -832,19 +846,51 @@ int nk_sync(nk_volume *v) {
     return nkdev_sync(v->vol->dev);
 }
 
-int nk_set_times(nk_volume *v, const char *path, long long atime,
-                 long long mtime, long long btime) {
+static int import_time(nk_timestamp value, ntfs_time *result) {
+    const s64 epoch_seconds = NTFS_TIME_OFFSET / 10000000;
+    if (value.seconds < -epoch_seconds ||
+        value.seconds > INT64_MAX / 10000000 - epoch_seconds ||
+        value.nanoseconds < 0 || value.nanoseconds >= 1000000000) {
+        errno = EINVAL;
+        return -1;
+    }
+    s64 whole = (value.seconds + epoch_seconds) * 10000000;
+    s64 fraction = value.nanoseconds / 100;
+    if (fraction > INT64_MAX - whole) { errno = EINVAL; return -1; }
+    *result = cpu_to_sle64(whole + fraction);
+    return 0;
+}
+
+int nk_set_times_precise(nk_volume *v, const char *path, const nk_times *times) {
     if (require_writable(v)) return -1;
-    if (!v) return -1;
+    if (!times || (times->valid & ~(NK_TIME_ACCESS | NK_TIME_MODIFY | NK_TIME_BIRTH))) {
+        errno = EINVAL;
+        return -1;
+    }
+    ntfs_time access = 0, modify = 0, birth = 0;
+    if (((times->valid & NK_TIME_ACCESS) && import_time(times->access, &access)) ||
+        ((times->valid & NK_TIME_MODIFY) && import_time(times->modify, &modify)) ||
+        ((times->valid & NK_TIME_BIRTH) && import_time(times->birth, &birth))) return -1;
     ntfs_inode *ni = open_public_inode(v, path, 1);
     if (!ni) return -1;
-    struct timespec ts = { 0, 0 };
-    if (atime >= 0) { ts.tv_sec = (time_t)atime; ni->last_access_time = timespec2ntfs(ts); }
-    if (mtime >= 0) { ts.tv_sec = (time_t)mtime; ni->last_data_change_time = timespec2ntfs(ts); }
-    if (btime >= 0) { ts.tv_sec = (time_t)btime; ni->creation_time = timespec2ntfs(ts); }
-    NInoFileNameSetDirty(ni);
-    ntfs_inode_mark_dirty(ni);
+    if (times->valid) {
+        ntfs_inode_update_times(ni, NTFS_UPDATE_CTIME);
+        if (times->valid & NK_TIME_ACCESS) ni->last_access_time = access;
+        if (times->valid & NK_TIME_MODIFY) ni->last_data_change_time = modify;
+        if (times->valid & NK_TIME_BIRTH) ni->creation_time = birth;
+        NInoFileNameSetDirty(ni);
+        ntfs_inode_mark_dirty(ni);
+    }
     return mutation_status(v, ntfs_inode_close(ni) ? -1 : 0);
+}
+
+int nk_set_times(nk_volume *v, const char *path, long long atime,
+                 long long mtime, long long btime) {
+    nk_times times = { 0 };
+    if (atime >= 0) { times.valid |= NK_TIME_ACCESS; times.access.seconds = atime; }
+    if (mtime >= 0) { times.valid |= NK_TIME_MODIFY; times.modify.seconds = mtime; }
+    if (btime >= 0) { times.valid |= NK_TIME_BIRTH; times.birth.seconds = btime; }
+    return nk_set_times_precise(v, path, &times);
 }
 
 int nk_readlink(nk_volume *v, const char *path, char *buf, size_t buflen) {

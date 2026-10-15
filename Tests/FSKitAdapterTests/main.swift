@@ -63,8 +63,9 @@ import XCTest
     }
 
     func testUnsupportedDatesAreRejected() {
-        for date in [timespec(tv_sec: -1, tv_nsec: 0), timespec(tv_sec: Int.max, tv_nsec: 0),
-                     timespec(tv_sec: 1, tv_nsec: 1_000_000_000)] {
+        for date in [timespec(tv_sec: -11_644_473_601, tv_nsec: 0), timespec(tv_sec: Int.max, tv_nsec: 0),
+                     timespec(tv_sec: 1, tv_nsec: 1_000_000_000),
+                     timespec(tv_sec: 910_692_730_085, tv_nsec: 477_580_800)] {
             let request = FSItem.SetAttributesRequest()
             request.modifyTime = date
             expectError(EINVAL) { _ = try NTFSAttributePolicy.validate(request, current: current(), readOnly: false) }
@@ -100,4 +101,4 @@ suite.addTest(ValidationTests.defaultTestSuite)
 suite.addTest(CreationTests.defaultTestSuite)
 suite.addTest(VolumeTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 32 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 36 ? 0 : 1)

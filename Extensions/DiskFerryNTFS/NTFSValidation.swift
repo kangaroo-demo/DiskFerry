@@ -57,10 +57,13 @@ enum NTFSAttributePolicy {
         let times: [(FSItem.Attribute, timespec)] = [(.accessTime, request.accessTime),
             (.modifyTime, request.modifyTime), (.birthTime, request.birthTime)]
         for (attribute, time) in times where request.isValid(attribute) {
-            // The bridge currently stores whole seconds; reject dates outside
-            // its sentinel/range contract rather than ignoring or overflowing.
-            guard time.tv_sec >= 0, time.tv_sec <= Int64.max / 10_000_000 - 11_644_473_600,
+            guard time.tv_sec >= -11_644_473_600,
+                  time.tv_sec <= Int64.max / 10_000_000 - 11_644_473_600,
                   (0..<1_000_000_000).contains(time.tv_nsec) else { try reject(EINVAL) }
+            // Validate the fractional part at the last representable second
+            // too, before applying any size/time component of the request.
+            let whole = (Int64(time.tv_sec) + 11_644_473_600) * 10_000_000
+            guard Int64(time.tv_nsec / 100) <= Int64.max - whole else { try reject(EINVAL) }
         }
         return unchanged
     }

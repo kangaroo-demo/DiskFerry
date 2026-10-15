@@ -483,6 +483,7 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         caps.supportsSymbolicLinks = true
         caps.supportsPersistentObjectIDs = false
         caps.doesNotSupportImmutableFiles = true
+        caps.doesNotSupportSettingFilePermissions = true
         caps.supports64BitObjectIDs = true
         return caps
     }
@@ -563,10 +564,10 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         attrs.flags = 0
         // All data stays on the serialized, byte-copy engine path.
         attrs.inhibitKernelOffloadedIO = true
-        attrs.modifyTime = timespec(tv_sec: Int(st.mtime), tv_nsec: 0)
-        attrs.accessTime = timespec(tv_sec: Int(st.atime), tv_nsec: 0)
-        attrs.changeTime = timespec(tv_sec: Int(st.ctime), tv_nsec: 0)
-        attrs.birthTime = timespec(tv_sec: Int(st.btime), tv_nsec: 0)
+        attrs.modifyTime = timespec(tv_sec: Int(st.mtime), tv_nsec: Int(st.mtime_nsec))
+        attrs.accessTime = timespec(tv_sec: Int(st.atime), tv_nsec: Int(st.atime_nsec))
+        attrs.changeTime = timespec(tv_sec: Int(st.ctime), tv_nsec: Int(st.ctime_nsec))
+        attrs.birthTime = timespec(tv_sec: Int(st.btime), tv_nsec: Int(st.btime_nsec))
         return attrs
     }
 

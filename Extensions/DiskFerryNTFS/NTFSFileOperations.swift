@@ -29,11 +29,21 @@ enum NTFSFileOperations {
             try checked { path.withCString { nk_truncate(volume, $0, Int64(request.size)) } }
             request.consumedAttributes.insert(.size)
         }
-        let atime = request.isValid(.accessTime) ? Int64(request.accessTime.tv_sec) : -1
-        let mtime = request.isValid(.modifyTime) ? Int64(request.modifyTime.tv_sec) : -1
-        let btime = request.isValid(.birthTime) ? Int64(request.birthTime.tv_sec) : -1
-        if atime >= 0 || mtime >= 0 || btime >= 0 {
-            try checked { path.withCString { nk_set_times(volume, $0, atime, mtime, btime) } }
+        var times = nk_times()
+        if request.isValid(.accessTime) {
+            times.valid |= UInt32(NK_TIME_ACCESS)
+            times.access = nk_timestamp(seconds: Int64(request.accessTime.tv_sec), nanoseconds: Int32(request.accessTime.tv_nsec))
+        }
+        if request.isValid(.modifyTime) {
+            times.valid |= UInt32(NK_TIME_MODIFY)
+            times.modify = nk_timestamp(seconds: Int64(request.modifyTime.tv_sec), nanoseconds: Int32(request.modifyTime.tv_nsec))
+        }
+        if request.isValid(.birthTime) {
+            times.valid |= UInt32(NK_TIME_BIRTH)
+            times.birth = nk_timestamp(seconds: Int64(request.birthTime.tv_sec), nanoseconds: Int32(request.birthTime.tv_nsec))
+        }
+        if times.valid != 0 {
+            try checked { path.withCString { nk_set_times_precise(volume, $0, &times) } }
             for attribute: FSItem.Attribute in [.accessTime, .modifyTime, .birthTime]
                 where request.isValid(attribute) {
                 request.consumedAttributes.insert(attribute)

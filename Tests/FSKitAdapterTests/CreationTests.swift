@@ -172,7 +172,7 @@ final class ImageSession {
             switch index {
             case 0: request.mode = 0o600; code = ENOTSUP
             case 1: request.size = UInt64.max; code = EFBIG
-            case 2: request.modifyTime = timespec(tv_sec: -1, tv_nsec: 0); code = EINVAL
+            case 2: request.modifyTime = timespec(tv_sec: -11_644_473_601, tv_nsec: 0); code = EINVAL
             case 3: request.type = .directory; code = EINVAL
             default: request.flags = 2; code = ENOTSUP
             }

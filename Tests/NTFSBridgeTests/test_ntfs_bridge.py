@@ -11,9 +11,11 @@ import select
 import shutil
 import signal
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -34,7 +36,16 @@ class FileStat(c.Structure):
     _fields_ = [("is_dir", c.c_int), ("size", c.c_longlong), ("alloc_size", c.c_longlong),
                 ("inode", c.c_uint64), ("atime", c.c_longlong), ("mtime", c.c_longlong),
                 ("ctime", c.c_longlong), ("btime", c.c_longlong), ("is_symlink", c.c_int),
-                ("koio_ok", c.c_int), ("is_resident", c.c_int)]
+                ("koio_ok", c.c_int), ("is_resident", c.c_int), ("atime_nsec", c.c_int),
+                ("mtime_nsec", c.c_int), ("ctime_nsec", c.c_int), ("btime_nsec", c.c_int)]
+
+
+class Timestamp(c.Structure):
+    _fields_ = [("seconds", c.c_longlong), ("nanoseconds", c.c_int)]
+
+
+class Times(c.Structure):
+    _fields_ = [("valid", c.c_uint), ("access", Timestamp), ("modify", Timestamp), ("birth", Timestamp)]
 
 
 def build_bridge():
@@ -55,6 +66,7 @@ def load_bridge():
     signatures = {
         "nk_mount_io": (c.c_void_p, [c.POINTER(IO), c.c_char_p, c.c_size_t]),
         "nk_umount": (c.c_int, [c.c_void_p]),
+        "nk_stat_path": (c.c_int, [c.c_void_p, c.c_char_p, c.POINTER(FileStat)]),
         "nk_lookup_child": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p, c.c_void_p, c.c_size_t, c.POINTER(FileStat)]),
         "nk_create": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p]),
         "nk_mkdir": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p]),
@@ -73,11 +85,26 @@ def load_bridge():
         "nk_xattr_remove": (c.c_int, [c.c_void_p, c.c_char_p, c.c_char_p]),
         "nk_set_label": (c.c_int, [c.c_void_p, c.c_char_p]),
         "nk_set_times": (c.c_int, [c.c_void_p, c.c_char_p, c.c_longlong, c.c_longlong, c.c_longlong]),
+        "nk_set_times_precise": (c.c_int, [c.c_void_p, c.c_char_p, c.POINTER(Times)]),
     }
     for name, (result, arguments) in signatures.items():
         function = getattr(lib, name)
         function.restype, function.argtypes = result, arguments
     return lib
+
+
+def raw_filetimes(image, filename):
+    """Read STANDARD_INFORMATION bytes with the independent stock utility.
+
+    Do not use the bridge's timestamp decoder as the only write oracle.
+    """
+    if not stat.S_ISREG(Path(image).lstat().st_mode):
+        raise ValueError("Only ordinary test images are allowed")
+    raw = subprocess.check_output([str(ENGINE / "ntfsprogs/ntfscat"), "-a", "0x10", str(image), filename],
+                                  stderr=subprocess.PIPE, timeout=30)
+    if len(raw) < 32:
+        raise AssertionError("Truncated STANDARD_INFORMATION attribute")
+    return dict(zip(("birth", "modify", "change", "access"), struct.unpack("<4Q", raw[:32])))
 
 
 class ImageIO:
@@ -161,6 +188,62 @@ class BridgeTests(unittest.TestCase):
         count = self.lib.nk_read(self.volume, path, offset, size, data)
         self.assertGreaterEqual(count, 0)
         return data.raw[:count]
+
+    def test_precise_times_preserve_pre_epoch_fractions_and_persist(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"precise"), 0)
+        requested = Times(7, Timestamp(-1, 123456789), Timestamp(-123456789, 987654321), Timestamp(-11644473600, 0))
+        before = time.time_ns()
+        self.assertEqual(self.lib.nk_set_times_precise(self.volume, b"/precise", c.byref(requested)), 0)
+        updated = FileStat()
+        self.assertEqual(self.lib.nk_stat_path(self.volume, b"/precise", c.byref(updated)), 0)
+        self.assertGreaterEqual(updated.ctime * 10**9 + updated.ctime_nsec, before - 99)
+        self.assertLessEqual(updated.ctime * 10**9 + updated.ctime_nsec, time.time_ns())
+        self.assertEqual(self.unmount(), 0)
+        before_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        raw = raw_filetimes(self.path, "/precise")
+        self.assertEqual(raw["birth"], 0)
+        self.assertEqual(raw["modify"], (-123456789 + 11644473600) * 10**7 + 9876543)
+        self.assertEqual(raw["access"], (-1 + 11644473600) * 10**7 + 1234567)
+        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before_hash)
+        self.mount(readonly=True)
+        self.assertEqual(self.lib.nk_stat_path(self.volume, b"/precise", c.byref(updated)), 0)
+        self.assertEqual((updated.atime, updated.atime_nsec), (-1, 123456700))
+        self.assertEqual((updated.mtime, updated.mtime_nsec), (-123456789, 987654300))
+        self.assertEqual((updated.btime, updated.btime_nsec), (-11644473600, 0))
+
+    def test_invalid_precise_times_leave_all_attributes_and_image_unchanged(self):
+        self.mount()
+        self.assertEqual(self.lib.nk_create(self.volume, b"/", b"original"), 0)
+        self.assertEqual(self.lib.nk_sync(self.volume), 0)
+        before = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        writes = self.device.writes
+        for seconds, nanos in [(-11644473601, 0), (2**63 - 1, 0), (0, -1), (0, 10**9),
+                               (910692730085, 477580800), (910692730086, 0)]:
+            requested = Times(3, Timestamp(1, 1), Timestamp(seconds, nanos), Timestamp())
+            with self.subTest(seconds=seconds, nanos=nanos):
+                self.assertEqual(self.lib.nk_set_times_precise(self.volume, b"/original", c.byref(requested)), -1)
+                self.assertEqual(c.get_errno(), errno.EINVAL)
+        for requested in [None, c.byref(Times(8, Timestamp(), Timestamp(), Timestamp()))]:
+            self.assertEqual(self.lib.nk_set_times_precise(self.volume, b"/original", requested), -1)
+            self.assertEqual(c.get_errno(), errno.EINVAL)
+        # Unrequested fields must not be converted, overflow, or dirty the inode.
+        ignored = Times(0, Timestamp(2**63 - 1, -1), Timestamp(-2**63, -1), Timestamp(0, 10**9))
+        self.assertEqual(self.lib.nk_set_times_precise(self.volume, b"/original", c.byref(ignored)), 0)
+        self.assertEqual(self.lib.nk_set_times(self.volume, b"/original", 2**63 - 1, -1, -1), -1)
+        self.assertEqual(c.get_errno(), errno.EINVAL)
+        self.assertEqual(self.device.writes, writes)
+        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
+
+    def test_precise_times_refuse_readonly_without_writes(self):
+        before = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.mount(readonly=True)
+        requested = Times(7, Timestamp(1, 123), Timestamp(2, 456), Timestamp(3, 789))
+        self.assertEqual(self.lib.nk_set_times_precise(self.volume, b"/", c.byref(requested)), -1)
+        self.assertEqual(c.get_errno(), errno.EROFS)
+        self.assertEqual(self.unmount(), 0)
+        self.assertEqual(self.device.writes, 0)
+        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
 
     def test_long_name_lookup_and_case_collision_protection(self):
         self.mount()
