@@ -389,9 +389,11 @@ class BridgeTests(unittest.TestCase):
                 attempts = self.device.writes
                 self.device.fail_write = True
                 try:
+                    c.set_errno(0)
                     result = operation()
                     self.assertGreater(self.device.writes, attempts, "fixture must reach a device write")
                     self.assertEqual(result, -1)
+                    self.assertEqual(c.get_errno(), errno.EIO, "cleanup must preserve the device error")
                 finally:
                     self.device.fail_write = False
                     self.assertEqual(self.unmount(), -1)

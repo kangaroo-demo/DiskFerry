@@ -98,5 +98,6 @@ import XCTest
 let suite = XCTestSuite(name: "FSKit adapter without system resources")
 suite.addTest(ValidationTests.defaultTestSuite)
 suite.addTest(CreationTests.defaultTestSuite)
+suite.addTest(VolumeTests.defaultTestSuite)
 suite.run()
-exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 17 ? 0 : 1)
+exit(suite.testRun?.hasSucceeded == true && suite.testCaseCount == 28 ? 0 : 1)

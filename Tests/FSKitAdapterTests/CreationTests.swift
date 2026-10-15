@@ -3,7 +3,7 @@ import Foundation
 import FSKit
 import XCTest
 
-private final class ImageDevice {
+final class ImageDevice {
     var fd: Int32
     var writes = 0
     var failAfterWrites: Int?
@@ -41,7 +41,7 @@ private let imageSync: nk_sync_cb = { context in
     return fsync(Unmanaged<ImageDevice>.fromOpaque(context).takeUnretainedValue().fd)
 }
 
-private final class ImageSession {
+final class ImageSession {
     let directory: URL
     let device: ImageDevice
     var volume: OpaquePointer?

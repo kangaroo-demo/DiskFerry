@@ -48,6 +48,13 @@ static int require_writable(nk_volume *v) {
     return 0;
 }
 
+/* inode cleanup may change errno after a device fault. The fault is sticky
+ * and must never escape as ENOENT/EEXIST (or even a successful mutation). */
+static int mutation_status(nk_volume *v, int result) {
+    if (v->devctx->failed) { errno = EIO; return -1; }
+    return result;
+}
+
 static u64 nk_mref(ntfs_inode *ni) {
     return MK_MREF(ni->mft_no, le16_to_cpu(ni->mrec->sequence_number));
 }
@@ -501,6 +508,7 @@ long long nk_write(nk_volume *v, const char *path, long long offset,
     }
     ntfs_inode_update_times(ni, NTFS_UPDATE_MCTIME);
     if (ntfs_inode_close(ni) && n >= 0) n = -1;   /* flushes size/timestamps */
+    if (v->devctx->failed) { errno = EIO; return -1; }
     return n;
 }
 
@@ -519,7 +527,7 @@ static int create_node(nk_volume *v, const char *dir_path, const char *name,
     int r = ni ? 0 : -1;
     if (ni && ntfs_inode_close(ni)) r = -1;
     if (ntfs_inode_close(dir)) r = -1;
-    return r;
+    return mutation_status(v, r);
 }
 
 int nk_create(nk_volume *v, const char *dir_path, const char *name) {
@@ -564,7 +572,7 @@ int nk_delete(nk_volume *v, const char *path) {
     /* ntfs_delete consumes (closes) both inodes, success or failure. */
     int r = ntfs_delete(v->vol, path, ni, dir, ucs, (u8)len);
     free(ucs);
-    return r ? -1 : 0;
+    return mutation_status(v, r ? -1 : 0);
 }
 
 /* Rename the way ntfs-3g's FUSE front end does: link under the new name,
@@ -589,17 +597,26 @@ int nk_rename(nk_volume *v, const char *old_path, const char *new_dir,
      * same inode is a no-op. */
     u64 ex = ntfs_inode_lookup_by_name(dir, ucs, len);
     if (ex != (u64)-1 && MREF(ex) == ni->mft_no) {
-        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni); return 0;
+        free(ucs);
+        int failed = ntfs_inode_close(dir) ? -1 : 0;
+        if (ntfs_inode_close(ni)) failed = -1;
+        return mutation_status(v, failed);
     }
 
     /* Remember both by MFT ref so a rollback never re-resolves paths. */
     u64 nref = nk_mref(ni), dref = nk_mref(dir);
     int r = ntfs_link(ni, dir, ucs, (u8)len);
-    ntfs_inode_close(dir);
-    ntfs_inode_close(ni);
-    if (r) { free(ucs); return -1; }
+    int error = r ? errno : 0;
+    if (ntfs_inode_close(dir)) { if (!error) error = errno; r = -1; }
+    if (ntfs_inode_close(ni)) { if (!error) error = errno; r = -1; }
+    if (r || v->devctx->failed) {
+        free(ucs);
+        errno = error ? error : EIO;
+        return mutation_status(v, -1);
+    }
 
     if (nk_delete(v, old_path) == 0) { free(ucs); return 0; }
+    error = errno;
 
     /* Deleting the old name failed — roll back the new link so the namespace
      * isn't left with two names for one file. */
@@ -612,7 +629,8 @@ int nk_rename(nk_volume *v, const char *old_path, const char *new_dir,
         if (ndir) ntfs_inode_close(ndir);
     }
     free(ucs);
-    return -1;
+    errno = error ? error : EIO;
+    return mutation_status(v, -1);
 }
 
 int nk_truncate(nk_volume *v, const char *path, long long size) {
@@ -628,7 +646,7 @@ int nk_truncate(nk_volume *v, const char *path, long long size) {
     }
     ntfs_inode_update_times(ni, NTFS_UPDATE_MCTIME);
     if (ntfs_inode_close(ni)) r = -1;
-    return r ? -1 : 0;
+    return mutation_status(v, r ? -1 : 0);
 }
 
 int nk_sync(nk_volume *v) {
@@ -659,7 +677,7 @@ int nk_set_times(nk_volume *v, const char *path, long long atime,
     if (btime >= 0) { ts.tv_sec = (time_t)btime; ni->creation_time = timespec2ntfs(ts); }
     NInoFileNameSetDirty(ni);
     ntfs_inode_mark_dirty(ni);
-    return ntfs_inode_close(ni) ? -1 : 0;
+    return mutation_status(v, ntfs_inode_close(ni) ? -1 : 0);
 }
 
 int nk_readlink(nk_volume *v, const char *path, char *buf, size_t buflen) {
@@ -713,8 +731,8 @@ int nk_create_symlink(nk_volume *v, const char *dir_path, const char *name,
     }
     free(uname);
     free(utarget);
-    ntfs_inode_close(dir);
-    return r;
+    if (ntfs_inode_close(dir)) r = -1;
+    return mutation_status(v, r);
 }
 
 int nk_is_dirty(nk_volume *v) {
@@ -747,7 +765,7 @@ int nk_set_label(nk_volume *v, const char *label) {
     if (len < 0 || len > 128 || !ucs) { free(ucs); return -1; }
     int r = ntfs_volume_rename(v->vol, ucs, len);
     free(ucs);
-    return r ? -1 : 0;
+    return mutation_status(v, r ? -1 : 0);
 }
 
 /* ---- extended attributes as NTFS named data streams (ADS) ----
@@ -836,7 +854,7 @@ int nk_xattr_set(nk_volume *v, const char *path, const char *name,
     ntfs_inode_mark_dirty(ni);
     if (ntfs_inode_close(ni)) r = -1;
     free(ucs);
-    return r;
+    return mutation_status(v, r);
 }
 
 int nk_xattr_remove(nk_volume *v, const char *path, const char *name) {
@@ -856,7 +874,7 @@ int nk_xattr_remove(nk_volume *v, const char *path, const char *name) {
     ntfs_inode_mark_dirty(ni);
     if (ntfs_inode_close(ni)) r = -1;
     free(ucs);
-    return r;
+    return mutation_status(v, r);
 }
 
 const char *nk_engine_version(void) {

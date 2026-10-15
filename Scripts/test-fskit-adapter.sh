@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test FSKit validation and file creation on ordinary images; no devices/mounts.
+# Test validation and production volume methods on ordinary images; no mounts/devices.
 set -euo pipefail
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
     export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -15,17 +15,26 @@ TASK_FRAMEWORKS="$(xcrun --sdk macosx --show-sdk-platform-path)/Developer/Librar
 TASK_TEST_LIB="$(xcrun --sdk macosx --show-sdk-platform-path)/Developer/usr/lib"
 TASK_TEST_PRIVATE_FRAMEWORKS="${TASK_FRAMEWORKS%/Frameworks}/PrivateFrameworks"
 mkdir -p "$TASK_OUTPUT"
-xcrun clang -c -O1 -g -DHAVE_CONFIG_H=1 -include "$TASK_ENGINE/config.h" \
+TASK_C_SANITIZER=()
+TASK_SWIFT_SANITIZER=()
+if [[ "${DISKFERRY_TEST_TSAN:-0}" == 1 ]]; then
+    TASK_C_SANITIZER=(-fsanitize=thread)
+    TASK_SWIFT_SANITIZER=(-sanitize=thread)
+fi
+xcrun clang "${TASK_C_SANITIZER[@]}" -c -O1 -g -DHAVE_CONFIG_H=1 -include "$TASK_ENGINE/config.h" \
     -I "$TASK_ENGINE" -I "$TASK_ENGINE/include" -I "$TASK_ENGINE/include/ntfs-3g" \
     "$TASK_ROOT/Extensions/DiskFerryNTFS/bridge/ntfs_bridge.c" -o "$TASK_OUTPUT/ntfs_bridge.o"
-xcrun swiftc -swift-version 5 -warnings-as-errors -target "$(uname -m)-apple-macos26.4" \
+xcrun swiftc "${TASK_SWIFT_SANITIZER[@]}" -swift-version 5 -warnings-as-errors -target "$(uname -m)-apple-macos26.4" \
     -import-objc-header "$TASK_ROOT/Extensions/DiskFerryNTFS/Bridging-Header.h" \
     -F "$TASK_FRAMEWORKS" -Xlinker -rpath -Xlinker "$TASK_FRAMEWORKS" \
     -I "$TASK_TEST_LIB" -L "$TASK_TEST_LIB" -Xlinker -rpath -Xlinker "$TASK_TEST_LIB" \
     -Xlinker -rpath -Xlinker "$TASK_TEST_PRIVATE_FRAMEWORKS" \
     "$TASK_ROOT/Extensions/DiskFerryNTFS/NTFSValidation.swift" \
     "$TASK_ROOT/Extensions/DiskFerryNTFS/NTFSFileOperations.swift" \
+    "$TASK_ROOT/Extensions/DiskFerryNTFS/NTFSVolume.swift" \
+    "$TASK_ROOT/Extensions/DiskFerryNTFS/NTFSItem.swift" \
     "$TASK_ROOT/Tests/FSKitAdapterTests/CreationTests.swift" \
+    "$TASK_ROOT/Tests/FSKitAdapterTests/VolumeTests.swift" \
     "$TASK_ROOT/Tests/FSKitAdapterTests/main.swift" \
     "$TASK_OUTPUT/ntfs_bridge.o" "$TASK_ENGINE/libntfs-3g/.libs/libntfs-3g.a" \
     -framework CoreFoundation -o "$TASK_OUTPUT/validation-tests"

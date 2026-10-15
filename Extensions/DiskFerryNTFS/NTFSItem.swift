@@ -18,6 +18,10 @@ final class NTFSItem: FSItem {
     }
     let kind: FSItem.ItemType
     let identifier: FSItem.Identifier
+    // Guarded by the owning volume's namespace lock. Unlinked items retain
+    // private backing storage until FSKit releases the last reference.
+    var unlinked = false
+    var reclaimed = false
 
     init(path: String, kind: FSItem.ItemType, identifier: FSItem.Identifier) {
         self._path = path
