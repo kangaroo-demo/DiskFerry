@@ -1,0 +1,1097 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ * Derived from NTFSKit commit 96ecccb1, DNA MAKER COMPANY LIMITED and contributors.
+ * Modified for DiskFerry 2026-10-16; see ../UPSTREAM.md.
+ */
+#include "ntfs_bridge.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
+#include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <pthread.h>
+
+#include <ntfs-3g/types.h>
+#include <ntfs-3g/layout.h>
+#include <ntfs-3g/volume.h>
+#include <ntfs-3g/inode.h>
+#include <ntfs-3g/dir.h>
+#include <ntfs-3g/attrib.h>
+#include <ntfs-3g/unistr.h>
+#include <ntfs-3g/ntfstime.h>
+#include <ntfs-3g/device.h>
+#include <ntfs-3g/reparse.h>
+#include <ntfs-3g/runlist.h>
+#include <ntfs-3g/logging.h>
+#include <ntfs-3g/logfile.h>
+#include <ntfs-3g/index.h>
+
+struct nk_devctx {
+    nk_io io;
+    s64 pos;
+    int failed;          /* sticky: never resume writes after an IO failure */
+    int writes_enabled;  /* forensic flag handles start with writes blocked */
+};
+
+struct nk_volume {
+    ntfs_volume *vol;
+    struct nk_devctx *devctx;
+    int marked_dirty;    /* this session owns the on-disk dirty flag */
+};
+
+static pthread_once_t name_policy_once = PTHREAD_ONCE_INIT;
+static void configure_name_policy(void) {
+#if defined(__APPLE__) || defined(__DARWIN__)
+    /* FSKit uses exact UTF-8 names. The engine's legacy macFUSE conversion
+     * silently composes input and decomposes output, aliasing distinct NTFS
+     * entries and producing names that cannot round-trip without changes. */
+    ntfs_macosx_normalize_filenames(0);
+#endif
+}
+
+static int require_writable(nk_volume *v) {
+    if (!v || !v->vol) { errno = EINVAL; return -1; }
+    if (NVolReadOnly(v->vol)) { errno = EROFS; return -1; }
+    if (v->devctx->failed) { errno = EIO; return -1; }
+    return 0;
+}
+
+/* inode cleanup may change errno after a device fault. The fault is sticky
+ * and must never escape as ENOENT/EEXIST (or even a successful mutation). */
+static int mutation_status(nk_volume *v, int result) {
+    if (v->devctx->failed) { errno = EIO; return -1; }
+    return result;
+}
+
+static u64 nk_mref(ntfs_inode *ni) {
+    return MK_MREF(ni->mft_no, le16_to_cpu(ni->mrec->sequence_number));
+}
+
+/* The engine's internal APIs intentionally permit access to NTFS metadata.
+ * Public file operations must not inherit that authority. Check record IDs,
+ * including every ancestor, rather than spelling or FILE_ATTR_SYSTEM (which
+ * also describes ordinary Interix symlinks). Check all FILE_NAME parents so
+ * an existing alias outside $Extend cannot expose its internal files. */
+static int public_inode_error(ntfs_inode *ni) {
+    if (ni->mft_no == FILE_root) return 0;
+    if (ni->mft_no < FILE_first_user) return EPERM;
+    ntfs_attr_search_ctx *ctx = ntfs_attr_get_search_ctx(ni, NULL);
+    if (!ctx) return errno ? errno : EIO;
+    int result = 0, found = 0;
+    while (!ntfs_attr_lookup(AT_FILE_NAME, NULL, 0, CASE_SENSITIVE, 0, NULL, 0, ctx)) {
+        ATTR_RECORD *attr = ctx->attr;
+        u32 length = le32_to_cpu(attr->length);
+        u32 offset = le16_to_cpu(attr->value_offset);
+        u32 size = le32_to_cpu(attr->value_length);
+        if (attr->non_resident || offset > length || size > length - offset ||
+            size < offsetof(FILE_NAME_ATTR, file_name)) {
+            result = EIO;
+            break;
+        }
+        FILE_NAME_ATTR *name = (FILE_NAME_ATTR *)((u8 *)attr + offset);
+        if (size - offsetof(FILE_NAME_ATTR, file_name) < (u32)name->file_name_length * 2) {
+            result = EIO;
+            break;
+        }
+        found = 1;
+        if (MREF_LE(name->parent_directory) == FILE_Extend) {
+            result = EPERM;
+            break;
+        }
+    }
+    if (!result && (!found || errno != ENOENT)) result = EIO;
+    ntfs_attr_put_search_ctx(ctx);
+    return result;
+}
+
+static ntfs_inode *open_public_inode(nk_volume *v, const char *path, int allow_root) {
+    if (!v || !v->vol || !path || path[0] != '/') { errno = EINVAL; return NULL; }
+    char *copy = strdup(path);
+    if (!copy) return NULL;
+    ntfs_inode *ni = ntfs_inode_open(v->vol, FILE_root);
+    char *state = NULL;
+    int error = 0;
+    for (char *part = strtok_r(copy, "/", &state); ni && part;
+         part = strtok_r(NULL, "/", &state)) {
+        if (!strcmp(part, ".") || !strcmp(part, "..")) { error = EINVAL; break; }
+        if (!(ni->mrec->flags & MFT_RECORD_IS_DIRECTORY)) { error = ENOTDIR; break; }
+        ntfschar *ucs = NULL;
+        int length = ntfs_mbstoucs(part, &ucs);
+        if (length <= 0 || length > 255 || !ucs) {
+            free(ucs);
+            error = length > 255 ? ENAMETOOLONG : EINVAL;
+            break;
+        }
+        u64 ref = ntfs_inode_lookup_by_name(ni, ucs, length);
+        free(ucs);
+        error = ref == (u64)-1 ? errno : 0;
+        if (ntfs_inode_close(ni) && !error) error = EIO;
+        ni = NULL;
+        if (error) break;
+        ni = ntfs_inode_open(v->vol, ref);
+        if (ni && (error = public_inode_error(ni))) break;
+    }
+    free(copy);
+    if (ni && !error && !allow_root && ni->mft_no == FILE_root) error = EPERM;
+    if (error) {
+        if (ni) ntfs_inode_close(ni);
+        errno = error;
+        return NULL;
+    }
+    return ni;
+}
+
+/* Resolve one component using the volume's on-disk $UpCase table. Keep the
+ * engine itself case-sensitive: every subsequent path operation must use the
+ * returned spelling, including when POSIX-created case variants coexist. */
+struct child_match {
+    const ntfschar *query;
+    int query_len;
+    ntfs_volume *vol;
+    ntfschar name[255];
+    int name_len;
+    MFT_REF ref;
+    int exact_count;
+    int folded_count;
+};
+
+static int match_child(void *context, const ntfschar *name, int length,
+                       int name_type, s64 pos, MFT_REF ref, unsigned type) {
+    (void)pos; (void)type;
+    struct child_match *match = context;
+    if (name_type == FILE_NAME_DOS || length < 1 || length > 255) return 0;
+    int exact = ntfs_names_are_equal(name, length, match->query, match->query_len,
+                                     CASE_SENSITIVE, match->vol->upcase, match->vol->upcase_len);
+    int folded = exact || ntfs_names_are_equal(name, length, match->query, match->query_len,
+                                               IGNORE_CASE, match->vol->upcase, match->vol->upcase_len);
+    if (exact) match->exact_count++;
+    if (folded) match->folded_count++;
+    if (exact || (folded && match->exact_count == 0 && match->folded_count == 1)) {
+        memcpy(match->name, name, (size_t)length * sizeof(*name));
+        match->name_len = length;
+        match->ref = ref;
+    }
+    return 0;
+}
+
+static int find_child(ntfs_inode *dir, const ntfschar *query, int length,
+                       struct child_match *match) {
+    if (!(dir->mrec->flags & MFT_RECORD_IS_DIRECTORY)) { errno = ENOTDIR; return -1; }
+    memset(match, 0, sizeof(*match));
+    match->query = query;
+    match->query_len = length;
+    match->vol = dir->vol;
+    s64 position = 0;
+    if (ntfs_readdir(dir, &position, match, match_child)) return -1;
+    if (match->exact_count > 1 || (!match->exact_count && match->folded_count > 1)) {
+        /* Never guess when an imported POSIX namespace has two folded matches. */
+        errno = EIO;
+        return -1;
+    }
+    if (!match->name_len) { errno = ENOENT; return -1; }
+    return 0;
+}
+
+static int component_to_ucs(const char *name, ntfschar **ucs) {
+    if (!name || !*name || !strcmp(name, ".") || !strcmp(name, "..") || strchr(name, '/')) {
+        errno = EINVAL;
+        return -1;
+    }
+    int length = ntfs_mbstoucs(name, ucs);
+    if (length <= 0 || !*ucs) { errno = EINVAL; return -1; }
+    if (length > 255) { errno = ENAMETOOLONG; return -1; }
+    return length;
+}
+
+static int require_absent_child(ntfs_inode *dir, const ntfschar *name, int length) {
+    struct child_match match;
+    if (!find_child(dir, name, length, &match)) { errno = EEXIST; return -1; }
+    return errno == ENOENT ? 0 : -1;
+}
+
+int nk_lookup_child(nk_volume *v, const char *directory, const char *name,
+                     char *actual, size_t capacity, nk_stat *st) {
+    if (!v || !actual || !capacity || !st) { errno = EINVAL; return -1; }
+    ntfschar *ucs = NULL;
+    int length = component_to_ucs(name, &ucs);
+    if (length < 0) { free(ucs); return -1; }
+    ntfs_inode *dir = open_public_inode(v, directory, 1);
+    if (!dir) { free(ucs); return -1; }
+    struct child_match match;
+    int result = find_child(dir, ucs, length, &match);
+    int error = result ? errno : 0;
+    if (ntfs_inode_close(dir) && !error) error = EIO;
+    free(ucs);
+    if (v->devctx->failed) error = EIO;
+    if (error) { errno = error; return -1; }
+    char *utf8 = NULL;
+    int bytes = ntfs_ucstombs(match.name, match.name_len, &utf8, 0);
+    if (bytes < 0 || !utf8) { free(utf8); return -1; }
+    if ((size_t)bytes >= capacity) { free(utf8); errno = ERANGE; return -1; }
+    char *path = malloc(strlen(directory) + (size_t)bytes + 2);
+    if (!path) { free(utf8); return -1; }
+    snprintf(path, strlen(directory) + (size_t)bytes + 2, "%s%s%s",
+             directory, !strcmp(directory, "/") ? "" : "/", utf8);
+    result = nk_stat_path(v, path, st);
+    error = result ? errno : 0;
+    if (v->devctx->failed) { result = -1; error = EIO; }
+    if (!result) memcpy(actual, utf8, (size_t)bytes + 1);
+    free(path);
+    free(utf8);
+    if (error) errno = error;
+    return result;
+}
+
+/* ---- callback-backed ntfs_device ---- */
+
+static int device_fault(struct nk_devctx *c, int code) {
+    c->failed = 1;
+    errno = code;
+    return -1;
+}
+
+static int nkdev_open(struct ntfs_device *dev, int flags) {
+    if ((flags & O_ACCMODE) == O_RDONLY)
+        NDevSetReadOnly(dev);
+    NDevSetOpen(dev);
+    return 0;
+}
+
+static int nkdev_close(struct ntfs_device *dev) {
+    NDevClearOpen(dev);
+    return 0;
+}
+
+static s64 nkdev_seek(struct ntfs_device *dev, s64 offset, int whence) {
+    struct nk_devctx *c = dev->d_private;
+    s64 base = whence == SEEK_SET ? 0 :
+               whence == SEEK_CUR ? c->pos : c->io.size;
+    if ((whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) ||
+        (offset > 0 && base > INT64_MAX - offset) ||
+        (offset < 0 && offset < -base) || base + offset > c->io.size) {
+        return device_fault(c, EINVAL);
+    }
+    c->pos = base + offset;
+    return c->pos;
+}
+
+static s64 nkdev_pread(struct ntfs_device *dev, void *buf, s64 count, s64 offset) {
+    struct nk_devctx *c = dev->d_private;
+    if (count < 0 || offset < 0 || offset > c->io.size || count > c->io.size - offset) {
+        return device_fault(c, EINVAL);
+    }
+    s64 n = c->io.pread(c->io.ctx, buf, count, offset);
+    if (n < 0 || n > count || (count > 0 && n == 0)) return device_fault(c, EIO);
+    return n;
+}
+
+static s64 nkdev_pwrite(struct ntfs_device *dev, const void *buf, s64 count, s64 offset) {
+    struct nk_devctx *c = dev->d_private;
+    if (NDevReadOnly(dev)) { errno = EROFS; return -1; }
+    if (c->failed) { errno = EIO; return -1; }
+    if (!c->writes_enabled) return device_fault(c, EROFS);
+    if (count < 0 || offset < 0 || offset > c->io.size || count > c->io.size - offset) {
+        return device_fault(c, EINVAL);
+    }
+    NDevSetDirty(dev);
+    s64 n = c->io.pwrite(c->io.ctx, buf, count, offset);
+    if (n < 0 || n > count || (count > 0 && n == 0)) return device_fault(c, EIO);
+    return n;
+}
+
+static s64 nkdev_read(struct ntfs_device *dev, void *buf, s64 count) {
+    struct nk_devctx *c = dev->d_private;
+    s64 n = nkdev_pread(dev, buf, count, c->pos);
+    if (n > 0) c->pos += n;
+    return n;
+}
+
+static s64 nkdev_write(struct ntfs_device *dev, const void *buf, s64 count) {
+    struct nk_devctx *c = dev->d_private;
+    s64 n = nkdev_pwrite(dev, buf, count, c->pos);
+    if (n > 0) c->pos += n;
+    return n;
+}
+
+static int nkdev_sync(struct ntfs_device *dev) {
+    struct nk_devctx *c = dev->d_private;
+    if (!NDevReadOnly(dev) && (!c->io.sync || c->io.sync(c->io.ctx))) {
+        return device_fault(c, EIO);
+    }
+    if (c->failed) { errno = EIO; return -1; }
+    NDevClearDirty(dev);
+    return 0;
+}
+
+static int nkdev_stat(struct ntfs_device *dev, struct stat *buf) {
+    struct nk_devctx *c = dev->d_private;
+    memset(buf, 0, sizeof(*buf));
+    buf->st_mode = S_IFREG | 0600;   /* image-file semantics: no ioctls */
+    buf->st_size = c->io.size;
+    return 0;
+}
+
+static int nkdev_ioctl(struct ntfs_device *dev, unsigned long request, void *argp) {
+    (void)dev; (void)request; (void)argp;
+    errno = ENOTSUP;
+    return -1;
+}
+
+static struct ntfs_device_operations nk_dev_ops = {
+    .open   = nkdev_open,
+    .close  = nkdev_close,
+    .seek   = nkdev_seek,
+    .read   = nkdev_read,
+    .write  = nkdev_write,
+    .pread  = nkdev_pread,
+    .pwrite = nkdev_pwrite,
+    .sync   = nkdev_sync,
+    .stat   = nkdev_stat,
+    .ioctl  = nkdev_ioctl,
+};
+
+static nk_volume *open_engine_io(const nk_io *io, ntfs_mount_flags flags,
+                                 int writes_enabled, char *errbuf, size_t errlen) {
+    struct nk_devctx *c = calloc(1, sizeof(*c));
+    if (!c) return NULL;
+    c->io = *io;
+    c->writes_enabled = writes_enabled;
+
+    struct ntfs_device *dev = ntfs_device_alloc("fskit-block", 0, &nk_dev_ops, c);
+    if (!dev) { free(c); return NULL; }
+
+    ntfs_volume *vol = ntfs_device_mount(dev, flags);
+    if (!vol) {
+        if (errbuf && errlen)
+            snprintf(errbuf, errlen, "ntfs_device_mount: %s", strerror(errno));
+        ntfs_device_free(dev);
+        free(c);
+        return NULL;
+    }
+    if (c->failed) {
+        ntfs_umount(vol, FALSE);
+        free(c);
+        errno = EIO;
+        return NULL;
+    }
+    nk_volume *v = calloc(1, sizeof(*v));
+    if (!v) { ntfs_umount(vol, FALSE); free(c); errno = ENOMEM; return NULL; }
+    v->vol = vol;
+    v->devctx = c;
+    return v;
+}
+
+static int close_engine(nk_volume *v) {
+    int failed = 0;
+    if (!v->devctx->io.readonly && v->devctx->writes_enabled && nk_sync(v)) failed = 1;
+    if (ntfs_umount(v->vol, FALSE)) failed = 1; /* frees vol and device even on error */
+    if (v->devctx->failed) failed = 1;
+    free(v->devctx);
+    free(v);
+    if (failed) { errno = EIO; return -1; }
+    return 0;
+}
+
+/* Equivalent to the pinned engine's read-only logfile checks. Do this before
+ * persisting our dirty marker; never replay/reset the Windows journal. */
+static int journal_is_clean(ntfs_volume *vol) {
+    ntfs_inode *ni = ntfs_inode_open(vol, FILE_LogFile);
+    if (!ni) return 0;
+    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    RESTART_PAGE_HEADER *restart = NULL;
+    int clean = na && ntfs_check_logfile(na, &restart) && ntfs_is_logfile_clean(na, restart);
+    if (restart && restart->major_ver == const_cpu_to_le16(2) &&
+        restart->minor_ver == const_cpu_to_le16(0)) clean = 0;
+    free(restart);
+    if (na) ntfs_attr_close(na);
+    if (ntfs_inode_close(ni)) clean = 0;
+    return clean;
+}
+
+/* Use a separate metadata-only handle. FORENSIC forbids automatic mount-time
+ * changes; callbacks also block every write until the expected flags are
+ * checked. The flag record is synced before a data-writing handle can open.
+ * Clearing is allowed only after the data handle has closed and synced. */
+static int change_session_flag(const nk_io *io, le16 expected, le16 updated) {
+    nk_volume *marker = open_engine_io(io, NTFS_MNT_FORENSIC, 0, NULL, 0);
+    if (!marker) return -1;
+    int result = -1;
+    if (marker->vol->flags == expected) {
+        marker->devctx->writes_enabled = 1;
+        result = ntfs_volume_write_flags(marker->vol, updated);
+        if (result == 0) result = nkdev_sync(marker->vol->dev);
+    } else {
+        errno = EROFS;
+    }
+    int saved = result == 0 ? 0 : errno;
+    int closed = close_engine(marker);
+    if (result != 0 || closed != 0) {
+        errno = saved ? saved : EIO;
+        return -1;
+    }
+    return result;
+}
+
+nk_volume *nk_mount_io(const nk_io *io, char *errbuf, size_t errlen) {
+    if (!io || !io->pread || io->size < 512 ||
+        (!io->readonly && (!io->pwrite || !io->sync))) {
+        errno = EINVAL;
+        if (errbuf && errlen) snprintf(errbuf, errlen, "invalid or incomplete block IO callbacks");
+        return NULL;
+    }
+    pthread_once(&name_policy_once, configure_name_policy);
+    if (io->readonly) return open_engine_io(io, NTFS_MNT_RDONLY, 0, errbuf, errlen);
+
+    nk_io ro = *io;
+    ro.readonly = 1;
+    nk_volume *preflight = open_engine_io(&ro, NTFS_MNT_RDONLY, 0, errbuf, errlen);
+    if (!preflight) return NULL;
+    int unsafe = preflight->vol->flags != 0 ||
+                 ntfs_volume_check_hiberfile(preflight->vol, 0) != 0 ||
+                 !journal_is_clean(preflight->vol);
+    int closed = close_engine(preflight);
+    if (unsafe || closed) {
+        errno = EROFS;
+        if (errbuf && errlen) snprintf(errbuf, errlen, "unsafe or unknown NTFS health; writable mount refused");
+        return NULL;
+    }
+    if (change_session_flag(io, 0, VOLUME_IS_DIRTY)) {
+        if (errbuf && errlen) snprintf(errbuf, errlen, "cannot persist NTFS session dirty flag");
+        return NULL;
+    }
+    /* All automatic engine mount changes now occur under a durable dirty
+     * marker. Failed opens deliberately leave it for Windows checking. */
+    nk_volume *v = open_engine_io(io, NTFS_MNT_NONE, 1, errbuf, errlen);
+    if (v) v->marked_dirty = 1;
+    return v;
+}
+
+int nk_umount(nk_volume *v) {
+    if (!v) { errno = EINVAL; return -1; }
+    nk_io io = v->devctx->io;
+    int marked_dirty = v->marked_dirty;
+    if (close_engine(v)) return -1;
+    if (!marked_dirty) return 0;
+    return change_session_flag(&io, VOLUME_IS_DIRTY, 0);
+}
+
+int nk_statvfs(nk_volume *v, long long *total_bytes, long long *free_bytes,
+               int *cluster_size) {
+    if (!v) return -1;
+    ntfs_volume *vol = v->vol;
+    if (ntfs_volume_get_free_space(vol) < 0) return -1;
+    if (total_bytes)  *total_bytes  = (long long)vol->nr_clusters * vol->cluster_size;
+    if (free_bytes)   *free_bytes   = (long long)vol->free_clusters * vol->cluster_size;
+    if (cluster_size) *cluster_size = (int)vol->cluster_size;
+    return 0;
+}
+
+int nk_label(nk_volume *v, char *buf, size_t buflen) {
+    if (!v || !buf || buflen == 0) return -1;
+    const char *name = v->vol->vol_name;
+    snprintf(buf, buflen, "%s", name ? name : "");
+    return 0;
+}
+
+/* Interix-style symlink: SYSTEM file whose data starts with "IntxLNK\1"
+ * (the format ntfs_create_symlink writes, same as ntfs-3g's FUSE driver). */
+static int is_intx_symlink(ntfs_attr *na) {
+    if (!na || na->data_size < 10 || na->data_size > 4096 + 8) return 0;
+    le64 magic = 0;
+    if (ntfs_attr_pread(na, 0, sizeof(magic), &magic) != sizeof(magic)) return 0;
+    return magic == INTX_SYMBOLIC_LINK;
+}
+
+static int export_time(ntfs_time value, long long *seconds, int *nanoseconds) {
+    s64 ticks = sle64_to_cpu(value);
+    if (ticks < 0) { errno = EOVERFLOW; return -1; }
+    s64 unix_ticks = ticks - NTFS_TIME_OFFSET;
+    *seconds = unix_ticks / 10000000;
+    s64 remainder = unix_ticks % 10000000;
+    /* C division truncates toward zero. POSIX timespec requires a floor
+     * second and nonnegative fraction even before the Unix epoch. */
+    if (remainder < 0) { (*seconds)--; remainder += 10000000; }
+    *nanoseconds = (int)(remainder * 100);
+    return 0;
+}
+
+static int fill_stat(ntfs_inode *ni, ntfs_attr *na, nk_stat *st) {
+    memset(st, 0, sizeof(*st));
+    st->is_dir = (ni->mrec->flags & MFT_RECORD_IS_DIRECTORY) ? 1 : 0;
+    st->inode = (uint64_t)ni->mft_no;
+    st->is_symlink = (ni->flags & FILE_ATTR_REPARSE_POINT) ? 1 : 0;
+    if (!st->is_symlink && (ni->flags & FILE_ATTR_SYSTEM) && is_intx_symlink(na))
+        st->is_symlink = 1;
+    if (na) {
+        st->size = (long long)na->data_size;
+        st->alloc_size = (long long)na->allocated_size;
+        st->is_resident = NAttrNonResident(na) ? 0 : 1;
+        st->koio_ok = 0; /* kernel-offloaded IO is not exposed */
+    }
+    if (export_time(ni->last_access_time, &st->atime, &st->atime_nsec) ||
+        export_time(ni->last_data_change_time, &st->mtime, &st->mtime_nsec) ||
+        export_time(ni->last_mft_change_time, &st->ctime, &st->ctime_nsec) ||
+        export_time(ni->creation_time, &st->btime, &st->btime_nsec)) return -1;
+    return 0;
+}
+
+int nk_stat_path(nk_volume *v, const char *path, nk_stat *st) {
+    if (!v || !st) { errno = EINVAL; return -1; }
+    ntfs_inode *ni = open_public_inode(v, path, 1);
+    if (!ni) return -1;
+    ntfs_attr *na = NULL;
+    int error = 0;
+    if (!(ni->mrec->flags & MFT_RECORD_IS_DIRECTORY)) {
+        na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+        if (!na) error = errno ? errno : EIO;
+    }
+    if (!error && fill_stat(ni, na, st)) error = errno;
+    if (na) ntfs_attr_close(na);
+    if (ntfs_inode_close(ni) && !error) error = EIO;
+    if (v->devctx->failed) error = EIO;
+    if (error) { errno = error; return -1; }
+    return 0;
+}
+
+struct list_ctx {
+    nk_volume   *v;
+    nk_dirent_cb cb;
+    void        *ctx;
+    int          stop;
+};
+
+static int nk_filldir(void *ctx, const ntfschar *name, const int name_len,
+                      const int name_type, const s64 pos, const MFT_REF mref,
+                      const unsigned dt_type) {
+    (void)pos;
+    struct list_ctx *lc = ctx;
+    if (lc->stop) return 0;
+    if (name_type == FILE_NAME_DOS) return 0;          /* skip 8.3 aliases */
+    if (MREF(mref) < (u64)FILE_first_user) return 0;   /* skip $MFT & friends */
+
+    char *utf8 = NULL;
+    if (ntfs_ucstombs(name, name_len, &utf8, 0) < 0 || !utf8) {
+        /* e.g. unpaired surrogate (legal on Windows): no UTF-8 form, and an
+         * escaped name couldn't be looked up again — skip, but say so. */
+        ntfs_log_error("readdir: skipping unconvertible name (inode %llu)\n",
+                       (unsigned long long)MREF(mref));
+        return 0;
+    }
+
+    int is_dot = utf8[0] == '.' &&
+                 (utf8[1] == '\0' || (utf8[1] == '.' && utf8[2] == '\0'));
+    if (!is_dot) {
+        nk_dirent e = { .name = utf8, .is_dir = dt_type == NTFS_DT_DIR,
+                        .size = 0, .inode = MREF(mref) };
+        if (!e.is_dir) {
+            ntfs_inode *ni = ntfs_inode_open(lc->v->vol, mref);
+            if (ni) {
+                ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+                if (na) { e.size = (long long)na->data_size; ntfs_attr_close(na); }
+                ntfs_inode_close(ni);
+            }
+        }
+        if (lc->cb(lc->ctx, &e) != 0) lc->stop = 1;
+    }
+    free(utf8);
+    return 0;
+}
+
+int nk_list(nk_volume *v, const char *dir_path, nk_dirent_cb cb, void *ctx) {
+    if (!v || !cb) return -1;
+    ntfs_inode *dir = open_public_inode(v, dir_path, 1);
+    if (!dir) return -1;
+    struct list_ctx lc = { v, cb, ctx, 0 };
+    s64 pos = 0;
+    int r = ntfs_readdir(dir, &pos, &lc, nk_filldir);
+    int error = r ? errno : 0;
+    if (ntfs_inode_close(dir) && !error) error = EIO;
+    if (v->devctx->failed) error = EIO;
+    if (error) { errno = error; return -1; }
+    return r ? -1 : 0;
+}
+
+long long nk_read(nk_volume *v, const char *path, long long offset,
+                  long long count, void *buf) {
+    if (!v) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 1);
+    if (!ni) return -1;
+    long long n = -1;
+    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    if (na) {
+        n = (long long)ntfs_attr_pread(na, offset, count, buf);
+        ntfs_attr_close(na);
+    }
+    ntfs_inode_close(ni);
+    return n;
+}
+
+long long nk_write(nk_volume *v, const char *path, long long offset,
+                   long long count, const void *buf) {
+    if (require_writable(v)) return -1;
+    if (!v) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 0);
+    if (!ni) return -1;
+    long long n = -1;
+    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    if (na) {
+        n = (long long)ntfs_attr_pwrite(na, offset, count, buf);
+        ntfs_attr_close(na);
+    }
+    ntfs_inode_update_times(ni, NTFS_UPDATE_MCTIME);
+    if (ntfs_inode_close(ni) && n >= 0) n = -1;   /* flushes size/timestamps */
+    if (v->devctx->failed) { errno = EIO; return -1; }
+    return n;
+}
+
+static int create_node(nk_volume *v, const char *dir_path, const char *name,
+                       mode_t type) {
+    if (require_writable(v)) return -1;
+    if (!v) return -1;
+    ntfs_inode *dir = open_public_inode(v, dir_path, 1);
+    if (!dir) return -1;
+    ntfschar *ucs = NULL;
+    int len = component_to_ucs(name, &ucs);
+    /* NTFS names are at most 255 UCS-2 units; (u8) casts must never wrap. */
+    if (len <= 0 || len > 255 || !ucs) {
+        int error = errno;
+        free(ucs); ntfs_inode_close(dir);
+        errno = error;
+        return mutation_status(v, -1);
+    }
+    if (require_absent_child(dir, ucs, len)) {
+        int error = errno;
+        free(ucs); ntfs_inode_close(dir);
+        errno = error;
+        return mutation_status(v, -1);
+    }
+    ntfs_inode *ni = ntfs_create(dir, const_cpu_to_le32(0), ucs, (u8)len, type);
+    free(ucs);
+    int r = ni ? 0 : -1;
+    if (ni && ntfs_inode_close(ni)) r = -1;
+    if (ntfs_inode_close(dir)) r = -1;
+    return mutation_status(v, r);
+}
+
+int nk_create(nk_volume *v, const char *dir_path, const char *name) {
+    return create_node(v, dir_path, name, S_IFREG);
+}
+
+int nk_mkdir(nk_volume *v, const char *dir_path, const char *name) {
+    return create_node(v, dir_path, name, S_IFDIR);
+}
+
+/* Split "/a/b/c" into parent "/a/b" (written into parent[]) and leaf "c". */
+static const char *split_path(const char *path, char *parent, size_t plen_max) {
+    const char *slash = strrchr(path, '/');
+    if (!slash) return NULL;
+    size_t plen = (size_t)(slash - path);
+    if (plen == 0) { strcpy(parent, "/"); }
+    else {
+        if (plen >= plen_max) return NULL;
+        memcpy(parent, path, plen);
+        parent[plen] = '\0';
+    }
+    return slash + 1;
+}
+
+int nk_delete(nk_volume *v, const char *path) {
+    if (require_writable(v)) return -1;
+    if (!v || !path) return -1;
+    size_t psize = strlen(path) + 2;   /* sized to the path: no length cap */
+    char *parent = malloc(psize);
+    const char *leaf = parent ? split_path(path, parent, psize) : NULL;
+    ntfs_inode *ni = leaf ? open_public_inode(v, path, 0) : NULL;
+    ntfs_inode *dir = ni ? open_public_inode(v, parent, 1) : NULL;
+    free(parent);
+    if (!dir) { if (ni) ntfs_inode_close(ni); return -1; }
+
+    ntfschar *ucs = NULL;
+    int len = ntfs_mbstoucs(leaf, &ucs);
+    if (len <= 0 || len > 255 || !ucs) {
+        int error = errno;
+        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni);
+        errno = error;
+        return mutation_status(v, -1);
+    }
+
+    /* ntfs_delete consumes (closes) both inodes, success or failure. */
+    int r = ntfs_delete(v->vol, path, ni, dir, ucs, (u8)len);
+    free(ucs);
+    return mutation_status(v, r ? -1 : 0);
+}
+
+/* Rename the way ntfs-3g's FUSE front end does: link under the new name,
+ * then delete the old name. Works for files and directories. */
+int nk_rename(nk_volume *v, const char *old_path, const char *new_dir,
+              const char *new_name) {
+    if (require_writable(v)) return -1;
+    if (!v) return -1;
+
+    ntfs_inode *ni = open_public_inode(v, old_path, 0);
+    if (!ni) return -1;
+    ntfs_inode *dir = open_public_inode(v, new_dir, 1);
+    if (!dir) { ntfs_inode_close(ni); return -1; }
+
+    ntfschar *ucs = NULL;
+    int len = component_to_ucs(new_name, &ucs);
+    if (len <= 0 || len > 255 || !ucs) {
+        int error = errno;
+        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni);
+        errno = error;
+        return mutation_status(v, -1);
+    }
+
+    struct child_match match;
+    int found = find_child(dir, ucs, len, &match) == 0;
+    int lookup_error = found ? 0 : errno;
+    if ((!found && lookup_error != ENOENT) || (found && match.ref != nk_mref(ni))) {
+        int error = found ? EEXIST : lookup_error;
+        free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni);
+        errno = error;
+        return mutation_status(v, -1);
+    }
+    /* Exact same-inode targets are no-ops. A folded match to the source's
+     * own name must proceed to link/delete so the requested case is stored. */
+    int recase = 0;
+    if (found && !match.exact_count) {
+        char *parent = malloc(strlen(old_path) + 2);
+        const char *leaf = parent ? split_path(old_path, parent, strlen(old_path) + 2) : NULL;
+        ntfschar *old_name = NULL;
+        int old_len = leaf ? ntfs_mbstoucs(leaf, &old_name) : -1;
+        ntfs_inode *old_dir = old_len > 0 ? open_public_inode(v, parent, 1) : NULL;
+        if (old_dir) {
+            recase = nk_mref(old_dir) == nk_mref(dir) &&
+                ntfs_names_are_equal(old_name, old_len, match.name, match.name_len,
+                                     CASE_SENSITIVE, v->vol->upcase, v->vol->upcase_len);
+        }
+        int error = old_dir ? 0 : (errno ? errno : EIO);
+        if (old_dir && ntfs_inode_close(old_dir)) error = EIO;
+        free(old_name); free(parent);
+        if (error) {
+            free(ucs); ntfs_inode_close(dir); ntfs_inode_close(ni);
+            errno = error;
+            return mutation_status(v, -1);
+        }
+    }
+    if (found && !recase) {
+        free(ucs);
+        int failed = ntfs_inode_close(dir) ? -1 : 0;
+        if (ntfs_inode_close(ni)) failed = -1;
+        return mutation_status(v, failed);
+    }
+
+    /* Remember both by MFT ref so a rollback never re-resolves paths. */
+    u64 nref = nk_mref(ni), dref = nk_mref(dir);
+    int r = ntfs_link(ni, dir, ucs, (u8)len);
+    int error = r ? errno : 0;
+    if (ntfs_inode_close(dir)) { if (!error) error = errno; r = -1; }
+    if (ntfs_inode_close(ni)) { if (!error) error = errno; r = -1; }
+    if (r || v->devctx->failed) {
+        free(ucs);
+        errno = error ? error : EIO;
+        return mutation_status(v, -1);
+    }
+
+    if (nk_delete(v, old_path) == 0) { free(ucs); return 0; }
+    error = errno;
+
+    /* Deleting the old name failed — roll back the new link so the namespace
+     * isn't left with two names for one file. */
+    ntfs_inode *nni = ntfs_inode_open(v->vol, nref);
+    ntfs_inode *ndir = ntfs_inode_open(v->vol, dref);
+    if (nni && ndir)
+        ntfs_delete(v->vol, NULL, nni, ndir, ucs, (u8)len);  /* consumes both */
+    else {
+        if (nni) ntfs_inode_close(nni);
+        if (ndir) ntfs_inode_close(ndir);
+    }
+    free(ucs);
+    errno = error ? error : EIO;
+    return mutation_status(v, -1);
+}
+
+int nk_truncate(nk_volume *v, const char *path, long long size) {
+    if (require_writable(v)) return -1;
+    if (!v) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 0);
+    if (!ni) return -1;
+    int r = -1;
+    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+    if (na) {
+        r = ntfs_attr_truncate(na, size);
+        ntfs_attr_close(na);
+    }
+    ntfs_inode_update_times(ni, NTFS_UPDATE_MCTIME);
+    if (ntfs_inode_close(ni)) r = -1;
+    return mutation_status(v, r ? -1 : 0);
+}
+
+int nk_sync(nk_volume *v) {
+    if (!v || !v->vol) { errno = EINVAL; return -1; }
+    if (!NVolReadOnly(v->vol) && !v->devctx->failed) {
+        if (v->vol->secure_xsii) ntfs_index_ctx_reinit(v->vol->secure_xsii);
+        if (v->vol->secure_xsdh) ntfs_index_ctx_reinit(v->vol->secure_xsdh);
+        ntfs_inode *inodes[] = { v->vol->secure_ni, v->vol->lcnbmp_ni,
+                                v->vol->mft_ni, v->vol->mftmirr_ni, v->vol->vol_ni };
+        for (size_t i = 0; i < sizeof(inodes) / sizeof(inodes[0]); i++) {
+            if (inodes[i] && ntfs_inode_sync(inodes[i])) device_fault(v->devctx, EIO);
+        }
+    }
+    /* A previous failure must not be forgotten when NDevDirty is already
+     * clear. Still attempt the persistence callback for completed writes. */
+    return nkdev_sync(v->vol->dev);
+}
+
+static int import_time(nk_timestamp value, ntfs_time *result) {
+    const s64 epoch_seconds = NTFS_TIME_OFFSET / 10000000;
+    if (value.seconds < -epoch_seconds ||
+        value.seconds > INT64_MAX / 10000000 - epoch_seconds ||
+        value.nanoseconds < 0 || value.nanoseconds >= 1000000000) {
+        errno = EINVAL;
+        return -1;
+    }
+    s64 whole = (value.seconds + epoch_seconds) * 10000000;
+    s64 fraction = value.nanoseconds / 100;
+    if (fraction > INT64_MAX - whole) { errno = EINVAL; return -1; }
+    *result = cpu_to_sle64(whole + fraction);
+    return 0;
+}
+
+int nk_set_times_precise(nk_volume *v, const char *path, const nk_times *times) {
+    if (require_writable(v)) return -1;
+    if (!times || (times->valid & ~(NK_TIME_ACCESS | NK_TIME_MODIFY | NK_TIME_BIRTH))) {
+        errno = EINVAL;
+        return -1;
+    }
+    ntfs_time access = 0, modify = 0, birth = 0;
+    if (((times->valid & NK_TIME_ACCESS) && import_time(times->access, &access)) ||
+        ((times->valid & NK_TIME_MODIFY) && import_time(times->modify, &modify)) ||
+        ((times->valid & NK_TIME_BIRTH) && import_time(times->birth, &birth))) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 1);
+    if (!ni) return -1;
+    if (times->valid) {
+        ntfs_inode_update_times(ni, NTFS_UPDATE_CTIME);
+        if (times->valid & NK_TIME_ACCESS) ni->last_access_time = access;
+        if (times->valid & NK_TIME_MODIFY) ni->last_data_change_time = modify;
+        if (times->valid & NK_TIME_BIRTH) ni->creation_time = birth;
+        NInoFileNameSetDirty(ni);
+        ntfs_inode_mark_dirty(ni);
+    }
+    return mutation_status(v, ntfs_inode_close(ni) ? -1 : 0);
+}
+
+int nk_set_times(nk_volume *v, const char *path, long long atime,
+                 long long mtime, long long btime) {
+    nk_times times = { 0 };
+    if (atime >= 0) { times.valid |= NK_TIME_ACCESS; times.access.seconds = atime; }
+    if (mtime >= 0) { times.valid |= NK_TIME_MODIFY; times.modify.seconds = mtime; }
+    if (btime >= 0) { times.valid |= NK_TIME_BIRTH; times.birth.seconds = btime; }
+    return nk_set_times_precise(v, path, &times);
+}
+
+int nk_readlink(nk_volume *v, const char *path, char *buf, size_t buflen) {
+    if (!v || !buf || buflen == 0) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 1);
+    if (!ni) return -1;
+    int r = -1;
+    if (ni->flags & FILE_ATTR_REPARSE_POINT) {
+        char *target = ntfs_make_symlink(ni, "/");
+        if (target) {
+            if (strlen(target) < buflen) { strcpy(buf, target); r = 0; }
+            else errno = ENAMETOOLONG;
+            free(target);
+        }
+    } else {
+        /* Interix symlink: UCS-2 target follows the 8-byte IntxLNK magic. */
+        ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
+        if (na && is_intx_symlink(na)) {
+            s64 tlen_bytes = na->data_size - 8;
+            ntfschar *ucs = malloc((size_t)tlen_bytes);
+            if (ucs && ntfs_attr_pread(na, 8, tlen_bytes, ucs) == tlen_bytes) {
+                char *utf8 = NULL;
+                if (ntfs_ucstombs(ucs, (int)(tlen_bytes / 2), &utf8, 0) >= 0 && utf8) {
+                    if (strlen(utf8) < buflen) { strcpy(buf, utf8); r = 0; }
+                    else errno = ENAMETOOLONG;
+                    free(utf8);
+                }
+            }
+            free(ucs);
+        }
+        if (na) ntfs_attr_close(na);
+    }
+    ntfs_inode_close(ni);
+    return r;
+}
+
+int nk_create_symlink(nk_volume *v, const char *dir_path, const char *name,
+                      const char *target) {
+    if (require_writable(v)) return -1;
+    if (!v) return -1;
+    ntfs_inode *dir = open_public_inode(v, dir_path, 1);
+    if (!dir) return -1;
+    ntfschar *uname = NULL, *utarget = NULL;
+    int nlen = component_to_ucs(name, &uname);
+    int tlen = nlen > 0 && target ? ntfs_mbstoucs(target, &utarget) : -1;
+    int r = -1;
+    if (nlen > 0 && nlen <= 255 && tlen > 0 && !require_absent_child(dir, uname, nlen)) {
+        ntfs_inode *ni = ntfs_create_symlink(dir, const_cpu_to_le32(0),
+                                             uname, (u8)nlen, utarget, tlen);
+        if (ni) { r = ntfs_inode_close(ni) ? -1 : 0; }
+    }
+    int error = r ? (errno ? errno : EINVAL) : 0;
+    free(uname);
+    free(utarget);
+    if (ntfs_inode_close(dir)) { if (!error) error = EIO; r = -1; }
+    if (error) errno = error;
+    return mutation_status(v, r);
+}
+
+int nk_is_dirty(nk_volume *v) {
+    if (!v) return -1;
+    return (v->vol->flags & VOLUME_IS_DIRTY) ? 1 : 0;
+}
+
+/* Checks never repair a volume or clear pre-existing dirty state. Only a
+ * successful close of our own writable session may clear its session flag. */
+int nk_fsck(const nk_io *io, int repair, char *errbuf, size_t errlen) {
+    if (!io || repair) { errno = ENOTSUP; return -1; }
+    nk_io ro = *io;
+    ro.readonly = 1;
+    nk_volume *v = nk_mount_io(&ro, errbuf, errlen);
+    if (!v) return -1;
+    int r = v->vol->flags != 0 ? 1 : 0;
+    if (ntfs_volume_check_hiberfile(v->vol, 0) != 0) r = -2;
+    if (r == 0 && !journal_is_clean(v->vol)) r = -1;
+    if (nk_umount(v)) return -1;
+    return r;
+}
+
+/* ---- volume label ---- */
+
+int nk_set_label(nk_volume *v, const char *label) {
+    if (require_writable(v)) return -1;
+    if (!v || !label) return -1;
+    ntfschar *ucs = NULL;
+    int len = ntfs_mbstoucs(label, &ucs);
+    if (len < 0 || len > 128 || !ucs) { free(ucs); return -1; }
+    int r = ntfs_volume_rename(v->vol, ucs, len);
+    free(ucs);
+    return mutation_status(v, r ? -1 : 0);
+}
+
+/* ---- extended attributes as NTFS named data streams (ADS) ----
+ * macOS xattrs map 1:1 onto alternate data streams, so they round-trip to
+ * Windows (visible as `file:name`) and back — no AppleDouble ._ files. */
+
+static ntfschar *xattr_ucs(const char *name, int *out_len) {
+    ntfschar *ucs = NULL;
+    int len = ntfs_mbstoucs(name, &ucs);
+    if (len <= 0 || len > 255 || !ucs) { free(ucs); return NULL; }
+    *out_len = len;
+    return ucs;
+}
+
+int nk_xattr_list(nk_volume *v, const char *path, nk_name_cb cb, void *ctx) {
+    if (!v || !cb) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 1);
+    if (!ni) return -1;
+    int r = 0;
+    ntfs_attr_search_ctx *sctx = ntfs_attr_get_search_ctx(ni, NULL);
+    if (!sctx) { ntfs_inode_close(ni); return -1; }
+    while (!ntfs_attr_lookup(AT_DATA, NULL, 0, CASE_SENSITIVE, 0, NULL, 0, sctx)) {
+        if (!sctx->attr->name_length) continue;    /* unnamed = file data */
+        char *utf8 = NULL;
+        ntfschar *name = (ntfschar *)((u8 *)sctx->attr
+                                      + le16_to_cpu(sctx->attr->name_offset));
+        if (ntfs_ucstombs(name, sctx->attr->name_length, &utf8, 0) >= 0 && utf8) {
+            if (cb(ctx, utf8)) { free(utf8); break; }
+            free(utf8);
+        } else {
+            ntfs_log_error("xattr_list: skipping unconvertible stream name\n");
+        }
+    }
+    ntfs_attr_put_search_ctx(sctx);
+    ntfs_inode_close(ni);
+    return r;
+}
+
+long long nk_xattr_get(nk_volume *v, const char *path, const char *name,
+                       void *buf, long long bufsize) {
+    if (!v || !name) return -1;
+    int nlen = 0;
+    ntfschar *ucs = xattr_ucs(name, &nlen);
+    if (!ucs) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 1);
+    if (!ni) { free(ucs); return -1; }
+    long long r = -1;
+    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, ucs, nlen);
+    if (na) {
+        if (!buf || bufsize == 0) {
+            r = na->data_size;             /* size query */
+        } else if (bufsize < na->data_size) {
+            errno = ERANGE;                /* never hand back a partial value */
+        } else {
+            r = ntfs_attr_pread(na, 0, na->data_size, buf);
+        }
+        ntfs_attr_close(na);
+    }
+    ntfs_inode_close(ni);
+    free(ucs);
+    return r;
+}
+
+int nk_xattr_set(nk_volume *v, const char *path, const char *name,
+                 const void *buf, long long size) {
+    if (require_writable(v)) return -1;
+    if (!v || !name || size < 0) return -1;
+    int nlen = 0;
+    ntfschar *ucs = xattr_ucs(name, &nlen);
+    if (!ucs) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 1);
+    if (!ni) { free(ucs); return -1; }
+    int r = -1;
+    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, ucs, nlen);
+    if (na) {
+        /* replace: overwrite FIRST, then shrink — a failed write leaves the
+         * old (or mixed) value, never a zeroed stream */
+        if ((size == 0 || ntfs_attr_pwrite(na, 0, size, buf) == size) &&
+            !ntfs_attr_truncate(na, size))
+            r = 0;
+        ntfs_attr_close(na);
+    } else if (!ntfs_attr_add(ni, AT_DATA, ucs, nlen,
+                              (u8 *)(size ? buf : (const void *)""), size)) {
+        r = 0;
+    }
+    ntfs_inode_mark_dirty(ni);
+    if (ntfs_inode_close(ni)) r = -1;
+    free(ucs);
+    return mutation_status(v, r);
+}
+
+int nk_xattr_remove(nk_volume *v, const char *path, const char *name) {
+    if (require_writable(v)) return -1;
+    if (!v || !name) return -1;
+    int nlen = 0;
+    ntfschar *ucs = xattr_ucs(name, &nlen);
+    if (!ucs) return -1;
+    ntfs_inode *ni = open_public_inode(v, path, 1);
+    if (!ni) { free(ucs); return -1; }
+    int r = -1;
+    ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, ucs, nlen);
+    if (na) {
+        r = ntfs_attr_rm(na) ? -1 : 0;     /* rm never frees na */
+        ntfs_attr_close(na);
+    }
+    ntfs_inode_mark_dirty(ni);
+    if (ntfs_inode_close(ni)) r = -1;
+    free(ucs);
+    return mutation_status(v, r);
+}
+
+const char *nk_engine_version(void) {
+    return "libntfs-3g 2026.9.28 (DiskFerry experimental FSKit)";
+}

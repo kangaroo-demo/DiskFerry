@@ -19,5 +19,7 @@ jobs:
         run: xcodebuild -version
       - name: Run Swift tests
         run: swift test
+      - name: Test removable-volume verifier boundaries without devices
+        run: python3 -m unittest discover -s Tests/RemovableVolumeTests -v
       - name: Build Universal 2 app and CLI
         run: bash Scripts/build-app.sh

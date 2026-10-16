@@ -36,7 +36,7 @@ public enum FileSystem: String, Sendable, Codable {
 
     public init(type: String?) {
         switch type?.lowercased() {
-        case "ntfs", "windows_ntfs": self = .ntfs
+        case "ntfs", "windows_ntfs", "diskferry_ntfs": self = .ntfs
         case "exfat": self = .exfat
         case "apfs": self = .apfs
         case "msdos", "fat", "fat16", "fat32": self = .fat
