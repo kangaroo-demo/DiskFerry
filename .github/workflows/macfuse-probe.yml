@@ -1,0 +1,51 @@
+name: Experimental macFUSE callback tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Tools/DiskFerryMacFUSE/**'
+      - 'Tests/MacFUSEProbeTests/**'
+      - 'Tests/NTFSBridgeTests/test_ntfs_bridge.py'
+      - 'Extensions/DiskFerryNTFS/bridge/**'
+      - 'Scripts/build-macfuse-probe.sh'
+      - 'Scripts/prepare-ntfs-core.sh'
+      - 'Vendor/**'
+      - '.github/workflows/macfuse-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  readonly-callbacks:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned NTFS core
+        run: bash Scripts/prepare-ntfs-core.sh
+      - name: Extract verified development files without installing runtime
+        run: |
+          mkdir -p .build/macfuse-sdk
+          curl --fail --location --max-time 180 \
+            https://github.com/macfuse/macfuse/releases/download/macfuse-5.4.0/macfuse-5.4.0.dmg \
+            --output .build/macfuse-sdk/runtime.dmg
+          printf '%s  %s\n' \
+            861814f0ac7fa8f6547ea40cdd49a36ac84bcc7d34f38a1fa74e8cf68b0401c5 \
+            .build/macfuse-sdk/runtime.dmg | shasum -a 256 -c -
+          task_mount="$RUNNER_TEMP/diskferry-macfuse-sdk"
+          mkdir -p "$task_mount"
+          hdiutil attach -readonly -nobrowse -mountpoint "$task_mount" .build/macfuse-sdk/runtime.dmg
+          trap 'hdiutil detach "$task_mount"' EXIT
+          pkgutil --check-signature "$task_mount/Install macFUSE.pkg"
+          pkgutil --expand-full "$task_mount/Install macFUSE.pkg" .build/macfuse-sdk/package
+          printf 'DISKFERRY_MACFUSE_PREFIX=%s\n' \
+            "$PWD/.build/macfuse-sdk/package/Core.pkg/Payload/usr/local" >> "$GITHUB_ENV"
+      - name: Compile experimental read-only tool
+        run: bash Scripts/build-macfuse-probe.sh
+      - name: Test production callbacks without mounting
+        run: python3 Tests/MacFUSEProbeTests/test_readonly.py
+      - name: Check adapter memory and undefined behavior
+        env:
+          DISKFERRY_PROBE_SANITIZERS: '1'
+        run: python3 Tests/MacFUSEProbeTests/test_readonly.py

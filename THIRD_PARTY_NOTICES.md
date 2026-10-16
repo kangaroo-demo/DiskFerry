@@ -1,6 +1,6 @@
 # 第三方组件说明
 
-除单独注明许可的文件外，仓库自身的代码、文档与品牌素材沿用根目录 [MIT License](LICENSE)。`Extensions/DiskFerryNTFS/` 实验扩展整体使用 GPL-2.0-only，不能按根目录 MIT 许可再许可。以下工具及平台使用各自的许可。
+除单独注明许可的文件外，仓库自身的代码、文档与品牌素材沿用根目录 [MIT License](LICENSE)。`Extensions/DiskFerryNTFS/` 实验扩展及 `Tools/DiskFerryMacFUSE/` 验证工具使用 GPL-2.0-only，不能按根目录 MIT 许可再许可。以下工具及平台使用各自的许可。
 
 ## 应用构建
 
@@ -13,6 +13,8 @@
 单独的 `Scripts/build-fskit-extension.sh` 或 `DiskFerryFSKit.xcodeproj` 会将固定 NTFS-3G 静态库链接到实验扩展；不链接到 MIT 菜单栏宿主。扩展整体按 GPL-2.0-only 提供，桥接 C 文件原有 GPL-2.0-or-later 声明及其他文件声明保留。实验包包含相关许可文本；未来向他人提供二进制时还须提供匹配的完整对应源码及构建信息。当前扩展未通过系统签名接纳、真实资源挂载和正式分发验收，不在正式 Release 中交付。
 
 ## 可选 NTFS 镜像验证工具
+
+`Tools/DiskFerryMacFUSE/` 只读验证工具按 GPL-2.0-only 提供，许可全文见 [GPLv2](Extensions/DiskFerryNTFS/LICENSE.GPL2)。它静态链接同一 GPL NTFS 核心与桥接，并动态链接使用者另行安装的 macFUSE libfuse（其源文件声明为 LGPLv2）。它不加入默认应用或独立 FSKit 扩展。macFUSE 运行时并非全部开源，其许可对商业软件中的捆绑、自动下载及安装有限制；本仓库不再分发运行时或库二进制。构建依赖和当前未验证范围见 [开发说明](docs/certificate-free-development.md)。
 
 `Scripts/prepare-ntfs-core.sh` 使用仓库 `Vendor/` 中保留的原始 NTFS-3G 源码包，并下载固定版本 pkgconf，核验 SHA-256 后在忽略的 `.build/vendor/` 中构建。保留 NTFS 原包是为避免上游下载站对 CI 返回 403，也便于交付对应源码，详见 [来源记录](Vendor/README.md)。上游源码、版权声明和许可证保留在源码包内；默认控制层应用不包含这些库或工具。实验扩展的链接范围见上一节。
 

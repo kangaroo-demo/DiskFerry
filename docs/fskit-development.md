@@ -45,6 +45,8 @@ GitHub Actions 的 `Experimental FSKit build and image tests` 工作流对修改
 
 本地 ad hoc / 自签名证书只证明包内容完整，不能代替 Apple Development 配置或 Developer ID 分发身份。开发验证需要系统接受真实签名及扩展；分发还需 Developer ID、Hardened Runtime、签名许可检查、公证和安装复验。不要关闭 SIP、降低启动安全策略或把手工注册记录当作通过。
 
+免费 Personal Team 的普通设备测试不包含 FSKit Module 权限。尚无付费开发者身份时，可以评估外部已签名 macFUSE 的 FSKit 后端；当前新增的只是独立只读镜像接入工具，安装、限制和验证状态见 [无付费证书开发说明](certificate-free-development.md)。这不代表当前独立扩展已获得系统接纳。
+
 在系统设置的“通用 → 登录项与扩展 → 文件系统扩展”中核对启用状态，并用 `dist/diskferry backend` 检查 FSKit 的实际枚举结果。即使扩展出现在枚举中，也必须继续取得真实资源并完成挂载与文件操作。目前没有经验证的手工挂载命令或可启用写入的开关；不得仅修改 readiness 常量或 `FSMediaTypes` 跳过这些阶段。
 
 ## 验证边界
