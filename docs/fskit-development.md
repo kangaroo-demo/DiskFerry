@@ -2,6 +2,8 @@
 
 `DiskFerryFSKit.xcodeproj` 将原生菜单栏宿主、MIT 控制层 framework 和独立 GPL NTFS 扩展组合为开发应用。默认 Swift Package 和 `Scripts/build-app.sh` 不包含该扩展。
 
+正式交付采用应用内置的原生 FSKit 扩展与 NTFS 核心，不依赖用户另装 macFUSE、Homebrew 或 NTFS 命令行工具。系统提示启用 DiskFerry 自带扩展属于正常授权流程；所需的 Apple 开发者签名由开发者完成，最终用户不需要开发者账号。
+
 当前实验扩展只读，未注册自动介质匹配，宿主仍报告 `writeEngineQualified = false`。编译、ad hoc 签名、`pluginkit` 注册均不能证明 FSKit 已接纳扩展。实际系统挂载、资源回调、Finder 读写和默认安全设置下的分发仍待验收，不能作为正式版本安装。
 
 ## 环境与构建
@@ -45,7 +47,7 @@ GitHub Actions 的 `Experimental FSKit build and image tests` 工作流对修改
 
 本地 ad hoc / 自签名证书只证明包内容完整，不能代替 Apple Development 配置或 Developer ID 分发身份。开发验证需要系统接受真实签名及扩展；分发还需 Developer ID、Hardened Runtime、签名许可检查、公证和安装复验。不要关闭 SIP、降低启动安全策略或把手工注册记录当作通过。
 
-免费 Personal Team 的普通设备测试不包含 FSKit Module 权限。尚无付费开发者身份时，可以评估外部已签名 macFUSE 的 FSKit 后端；当前新增的只是独立只读镜像接入工具，安装、限制和验证状态见 [无付费证书开发说明](certificate-free-development.md)。这不代表当前独立扩展已获得系统接纳。
+免费 Personal Team 的普通设备测试不包含 FSKit Module 权限。当前没有可授权此能力的 Apple 签名身份，因此原生扩展的系统接纳与挂载验证受阻。菜单栏应用本身仍可采用本地签名打包；这与扩展权限是两项独立检查，不能把借用第三方已签名扩展作为产品解决方案。详见 [打包与签名条件](certificate-free-development.md)。
 
 在系统设置的“通用 → 登录项与扩展 → 文件系统扩展”中核对启用状态，并用 `dist/diskferry backend` 检查 FSKit 的实际枚举结果。即使扩展出现在枚举中，也必须继续取得真实资源并完成挂载与文件操作。目前没有经验证的手工挂载命令或可启用写入的开关；不得仅修改 readiness 常量或 `FSMediaTypes` 跳过这些阶段。
 

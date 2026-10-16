@@ -4,6 +4,8 @@ A native macOS menu bar utility for external NTFS disks, built with Swift, AppKi
 
 盘渡希望让外置 NTFS 磁盘融入 Finder 的日常使用。当前为 **0.2.0-dev 开发阶段源码，尚未发布正式版本**。
 
+正式版的安装目标是只安装 DiskFerry：应用内包含自己的 NTFS 引擎和原生 FSKit 扩展，必要时由 macOS 提示启用扩展。用户无需另装 macFUSE、Homebrew 或命令行 NTFS 工具。当前原生扩展仍在开发，系统接入所需的 Apple 签名身份尚未配置，详见 [打包与签名条件](docs/certificate-free-development.md)。
+
 **NTFS 写入尚未接入。** 当前应用提供磁盘发现、实际访问状态、Finder 打开、安全推出和登录自启动；系统只读挂载不会被显示为可写。自动读写、活动显示和更新设置中尚未实现的能力会明确标注。
 
 ![盘渡通用设置](docs/images/settings-light.png)
