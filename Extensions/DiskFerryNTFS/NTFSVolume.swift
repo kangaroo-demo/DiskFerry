@@ -367,9 +367,9 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let rc: Int32 = vol.map { nk_umount($0) } ?? 0
             vol = nil
             if rc != 0 { shutdownError = EIO }
-            if !readOnly && ioMode == .metadata {
-                do { try resource.metadataFlush() } catch { shutdownError = EIO }
-            }
+            // nk_umount persists data and the session flag through deviceSync.
+            // Do not issue another resource operation after the engine has
+            // closed: its fault latch and dirty-marker handle are gone.
             // If FSKit reactivates this instance, the next engine open happens
             // pre-mount again — the buffer cache won't be attached, so start
             // back in probing mode.
@@ -543,9 +543,14 @@ final class NTFSVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     }
 
     func synchronize(flags: FSSyncFlags) async throws {
-        let (rc, e) = engine { nk_sync(vol) }
-        guard rc == 0 else { throw posix(errno: e) }
-        if !readOnly { try resource.metadataFlush() }
+        try stateLock.withLock {
+            // nk_sync reaches metadataFlush through deviceSync, so every
+            // persistence error is latched by the engine before returning.
+            // A separate resource flush could fail outside that protection
+            // and let a later write or clean shutdown succeed incorrectly.
+            let (rc, e) = engine { nk_sync(vol) }
+            guard rc == 0 else { throw posix(errno: e) }
+        }
     }
 
     // MARK: attributes

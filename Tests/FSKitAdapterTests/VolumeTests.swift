@@ -15,11 +15,19 @@ final class ImageBlockIO: NTFSBlockIO {
     private var writeFailure = false
     private var writeLimit: Int?
     private var writes = 0
+    private var flushes = 0
+    private var failFlushNumber: Int?
     var isRevoked: Bool { get { lock.withLock { revoked } } set { lock.withLock { revoked = newValue } } }
     var failReads: Bool { get { lock.withLock { readFailure } } set { lock.withLock { readFailure = newValue } } }
     var failWrites: Bool { get { lock.withLock { writeFailure } } set { lock.withLock { writeFailure = newValue } } }
     var failAfterWrites: Int? { get { lock.withLock { writeLimit } } set { lock.withLock { writeLimit = newValue } } }
     var writeCount: Int { lock.withLock { writes } }
+
+    /// Fail one persistence operation, then recover like a transient device
+    /// error. The volume must still keep its session fault latched.
+    func failFlush(afterSuccessfulFlushes count: Int) {
+        lock.withLock { failFlushNumber = flushes + count + 1 }
+    }
 
     init(_ device: ImageDevice) { self.device = device }
 
@@ -54,6 +62,11 @@ final class ImageBlockIO: NTFSBlockIO {
     }
 
     func metadataFlush() throws {
+        let failed = lock.withLock {
+            flushes += 1
+            return revoked || failFlushNumber == flushes
+        }
+        if failed { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)) }
         guard fsync(device.fd) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
     }
 }
@@ -128,6 +141,42 @@ private final class AsyncTestResult: @unchecked Sendable {
         wait(for: [completed], timeout: 20)
         task.cancel()
         try result.check()
+    }
+
+    func testTransientSynchronizationFailureCannotResumeWritesOrCleanShutdown() throws {
+        try runAsync {
+            // Exercise a fault both immediately and after a successful flush.
+            // Whether one synchronize call issues one or several resource
+            // flushes, its first observed persistence error must be sticky.
+            for successfulFlushes in 0...1 {
+                let session = try VolumeImage()
+                let file = try await session.create("keep")
+                _ = try await session.volume.write(contents: Data("KEEP".utf8), to: file, at: 0)
+                session.transport.failFlush(afterSuccessfulFlushes: successfulFlushes)
+                var observedFailure = false
+                for _ in 0...successfulFlushes {
+                    do { try await session.volume.synchronize(flags: .wait) }
+                    catch {
+                        XCTAssertEqual((error as NSError).domain, NSPOSIXErrorDomain)
+                        XCTAssertEqual((error as NSError).code, Int(EIO))
+                        observedFailure = true
+                        break
+                    }
+                }
+                XCTAssertTrue(observedFailure, "The scheduled persistence fault must be observed")
+                let writes = session.transport.writeCount
+                await self.expectError(EIO) { _ = try await session.create("forbidden") }
+                await self.expectError(EIO) {
+                    _ = try await session.volume.write(contents: Data("LOST".utf8), to: file, at: 0)
+                }
+                await self.expectError(EIO) { try await session.volume.synchronize(flags: .wait) }
+                XCTAssertEqual(session.transport.writeCount, writes, "No device writes after the fault")
+                XCTAssertEqual(session.volume.finishVolume(), -1)
+                XCTAssertEqual(try session.contentsAfterClose("/keep"), Data("KEEP".utf8))
+                XCTAssertEqual(nk_is_dirty(session.image.volume), 1)
+                XCTAssertThrowsError(try session.image.stat("/forbidden"))
+            }
+        }
     }
 
     func testSubsecondCreationAndSetTimesPersistAtNTFSPrecision() throws {
@@ -508,6 +557,11 @@ private final class AsyncTestResult: @unchecked Sendable {
                         XCTAssertEqual(value, Data("ATTR".utf8))
                         let attributes = try await session.volume.attributes(FSItem.GetAttributesRequest(), of: file)
                         XCTAssertEqual(attributes.size, 4)
+                    }
+                }
+                group.addTask {
+                    for _ in 0..<100 {
+                        try await session.volume.synchronize(flags: .wait)
                     }
                 }
                 try await group.waitForAll()
